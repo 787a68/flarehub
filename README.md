@@ -1,248 +1,220 @@
 # FlareHub
 
-FlareHub 是部署在 Cloudflare Workers 上的资源代理，提供 GitHub、Hugging Face、Docker Hub 和常用 OCI Registry 的加速访问。项目自带可选 Web 前端，也可以只部署代理 Worker。
+FlareHub 是运行在 Cloudflare Workers 上的 GitHub、Hugging Face 和容器镜像代理。部署后可直接使用网页转换链接、搜索 Docker Hub 镜像、下载 OCI 镜像归档，以及搜索 Hugging Face 模型。
 
-## 功能
+## 使用说明
 
-- 转换并代理 GitHub Release、Raw、Archive、Codeload、Gist、API 和静态资源链接。
-- 搜索 Hugging Face 公开模型，查看文件并生成代理下载链接。
-- 搜索 Docker Hub 公开镜像，查看标签和支持的平台。
-- 将 Docker Hub 镜像按指定平台导出为 OCI Image Layout tar。
-- 代理 Docker Hub、GHCR、GCR、Quay 和 Kubernetes Registry 的 OCI Distribution API。
-- 支持通过 Registry Basic/Bearer 鉴权拉取私有镜像。
-- 支持仓库白名单、黑名单和按客户端 IP 分类限速。
-- 支持 GitHub Actions 自动部署，Fork 后无需修改代码。
+将下文中的 `https://你的域名` 替换为部署后的 `workers.dev` 地址或绑定到 Worker 的自定义域名。
 
-## 使用方法
+### 网页
 
-以下示例假设服务地址为：
+访问：
 
 ```text
-https://flarehub.example.workers.dev
+https://你的域名/
 ```
 
-### 资源链接代理
+网页提供：
 
-代理格式为：
+- GitHub、Hugging Face 等受支持链接的加速地址转换。
+- Docker Hub 公共镜像搜索、标签浏览和 OCI 镜像归档下载。
+- Hugging Face 公共模型搜索、文件浏览和加速链接生成。
+- 当前仓库白名单、黑名单策略展示。
+
+如果部署时将 `DEPLOY_FRONTEND` 设为 `false`，网页不会部署，但代理接口仍可使用。
+
+### GitHub 文件
+
+在原始 HTTPS 地址前添加 FlareHub 域名，并去掉原地址中的 `https://`：
 
 ```text
-https://你的服务域名/上游主机/资源路径
+原地址：  https://github.com/owner/repo/releases/download/v1.0/file.zip
+加速地址：https://你的域名/github.com/owner/repo/releases/download/v1.0/file.zip
 ```
 
-上游地址中的 `https://` 不保留。例如：
+同样的格式适用于以下主机：
+
+- `github.com`
+- `raw.githubusercontent.com`
+- `gist.githubusercontent.com`
+- `codeload.github.com`
+- `objects.githubusercontent.com`
+- `release-assets.githubusercontent.com`
+
+例如：
 
 ```text
-# GitHub Release
-https://flarehub.example.workers.dev/github.com/owner/repo/releases/download/v1.0/file.zip
-
-# GitHub Raw
-https://flarehub.example.workers.dev/raw.githubusercontent.com/owner/repo/main/file.txt
-
-# Hugging Face
-https://flarehub.example.workers.dev/huggingface.co/owner/model/resolve/main/model.safetensors
+https://你的域名/raw.githubusercontent.com/owner/repo/main/file.txt
+https://你的域名/codeload.github.com/owner/repo/zip/refs/heads/main
 ```
 
-部署前端后，也可以打开服务首页，粘贴完整的上游 HTTPS 链接并自动转换。
+访问私有 GitHub 资源时，可向 FlareHub 请求传递原有的 `Authorization` 请求头。鉴权请求不会进入共享缓存。
 
-资源代理仅接受代码内允许的 GitHub、Hugging Face 和 Docker 下载主机，不是任意 URL 开放代理。
+### Hugging Face 文件
 
-### Docker 镜像拉取
-
-Docker Hub 官方镜像：
-
-```bash
-docker pull flarehub.example.workers.dev/library/nginx:latest
-```
-
-Docker Hub 用户镜像：
-
-```bash
-docker pull flarehub.example.workers.dev/owner/image:tag
-```
-
-其他 Registry 需要将上游域名放在镜像路径首段：
-
-```bash
-docker pull flarehub.example.workers.dev/ghcr.io/owner/image:tag
-docker pull flarehub.example.workers.dev/gcr.io/project/image:tag
-docker pull flarehub.example.workers.dev/quay.io/owner/image:tag
-docker pull flarehub.example.workers.dev/registry.k8s.io/pause:latest
-```
-
-当前固定支持以下 Registry：
-
-- `docker.io`
-- `registry-1.docker.io`
-- `ghcr.io`
-- `gcr.io`
-- `quay.io`
-- `registry.k8s.io`
-
-上游映射固定在代码中，不能通过环境变量改成任意 Registry。
-
-### 私有镜像
-
-先使用上游 Registry 的用户名和密码或访问令牌登录 FlareHub 域名：
-
-```bash
-docker login flarehub.example.workers.dev
-```
-
-然后使用前述代理镜像地址执行 `docker pull`。例如拉取 GHCR 私有镜像时，在 `docker login` 中输入 GitHub 用户名和具备镜像读取权限的 Personal Access Token，再执行：
-
-```bash
-docker pull flarehub.example.workers.dev/ghcr.io/owner/private-image:tag
-```
-
-Docker 会通过 FlareHub 完成 Registry challenge 和 Token Service 交换。认证请求和令牌响应使用私有、禁止缓存的响应策略。
-
-同一个代理域名在 Docker 客户端中只保存一组登录凭据。切换到使用不同凭据的上游 Registry 前，请重新执行 `docker login`。
-
-### Web 前端
-
-启用前端后提供三个功能页：
-
-1. 资源链接转换和常用代理示例。
-2. Docker Hub 镜像搜索、标签查询、拉取命令复制和 OCI tar 下载。
-3. Hugging Face 公开模型搜索、文件查看和下载。
-
-OCI tar 下载接口仅面向 Docker Hub 镜像，格式如下：
+格式同样为“FlareHub 域名 + 上游主机 + 路径”：
 
 ```text
-/api/image/download?image=library/nginx:latest&platform=linux/amd64
+原地址：  https://huggingface.co/Qwen/Qwen2.5-0.5B/resolve/main/README.md
+加速地址：https://你的域名/huggingface.co/Qwen/Qwen2.5-0.5B/resolve/main/README.md
 ```
 
-## GitHub Actions 部署
+支持：
+
+- `huggingface.co`
+- `cdn-lfs.huggingface.co`
+- `cdn-lfs-us-1.huggingface.co`
+- `cdn-lfs-eu-1.huggingface.co`
+
+### 容器镜像代理
+
+支持以下 Registry：
+
+| 上游 | FlareHub 路径前缀 |
+| --- | --- |
+| Docker Hub | `/docker.io` |
+| GitHub Container Registry | `/ghcr.io` |
+| Google Container Registry | `/gcr.io` |
+| Quay | `/quay.io` |
+| Kubernetes Registry | `/registry.k8s.io` |
+
+拉取 Docker Hub 官方 `library/alpine`：
+
+```bash
+docker pull 你的域名/library/alpine:latest
+```
+
+也可以显式保留 Registry 前缀：
+
+```bash
+docker pull 你的域名/docker.io/library/alpine:latest
+docker pull 你的域名/ghcr.io/owner/image:tag
+docker pull 你的域名/gcr.io/project/image:tag
+docker pull 你的域名/quay.io/owner/image:tag
+docker pull 你的域名/registry.k8s.io/pause:3.10
+```
+
+私有镜像先登录 FlareHub 域名，再执行拉取：
+
+```bash
+docker login 你的域名
+docker pull 你的域名/ghcr.io/owner/private-image:tag
+```
+
+FlareHub 会把 Registry 的认证请求代理到对应上游，不保存用户名、密码或上游 Token。
+
+### 下载 Docker Hub 镜像为 OCI 归档
+
+```text
+https://你的域名/api/image-download?image=alpine:latest&platform=linux/amd64
+```
+
+参数：
+
+- `image`：Docker Hub 镜像及可选标签；未指定标签时使用 `latest`。
+- `platform`：可选，默认为 `linux/amd64`，也支持带 variant 的格式，例如 `linux/arm/v7`。
+
+下载结果为 OCI Image Layout 的 `.tar` 文件，只支持 Docker Hub 镜像。
+
+## 部署说明
 
 ### 1. Fork 仓库
 
-Fork 本仓库后，无需修改 `wrangler.jsonc`。GitHub Actions 会根据仓库 Variables 生成临时部署配置。
+Fork 本仓库。在 Fork 仓库的 **Actions** 页面启用 GitHub Actions。
 
-### 2. 创建 Cloudflare API Token
+工作流会在以下情况部署：
 
-登录 Cloudflare Dashboard，进入 API Token 管理页面并创建自定义 Token。
+- 推送到 `main` 分支。
+- 在 **Actions → Deploy to Cloudflare Workers → Run workflow** 手动运行。
 
-Token 使用以下最小权限：
+### 2. 获取 Cloudflare Account ID
 
-| 权限范围 | 权限名称 | 访问级别 |
+`CF_ACCOUNT_ID` 必须是目标 Cloudflare **账户 ID**，不是域名的 Zone ID。按 Cloudflare 文档操作：
+
+1. 登录 Cloudflare Dashboard。
+2. 打开 **Workers & Pages**。
+3. 在 **Account details** 中复制 **Account ID**。
+
+也可以在 **Account home** 找到目标账户，打开账户行末尾的菜单，选择 **Copy account ID**。
+
+### 3. 创建 Cloudflare API Token
+
+按 Cloudflare 的 Workers GitHub Actions 与 API Token 文档操作：
+
+1. 登录 Cloudflare Dashboard。
+2. 打开 **My Profile → API Tokens**。
+3. 点击 **Create Token**。
+4. 在 **API token templates** 中找到 **Edit Cloudflare Workers**，点击 **Use template**。
+5. 配置 Token 的账户资源，使其包含 `CF_ACCOUNT_ID` 对应的目标账户。
+6. 点击 **Continue to summary** 检查 Token 权限和资源范围。
+7. 点击 **Create Token**。
+8. 立即复制生成的 Token Secret。
+
+Token Secret 只显示一次。不要将其以明文保存到他人可访问的位置；任何获得该 Token 的人都可以对其授权资源执行相应操作。
+
+### 4. 配置 GitHub Secrets
+
+打开 Fork 仓库：
+
+**Settings → Secrets and variables → Actions → Secrets → New repository secret**
+
+添加：
+
+| 名称 | 值 |
+| --- | --- |
+| `CF_API_TOKEN` | 上一步复制的 Cloudflare API Token Secret |
+| `CF_ACCOUNT_ID` | 目标 Cloudflare 账户的 Account ID |
+
+两个值都必须放在 **Secrets** 中。工作流会把它们传给 Wrangler，并把 Account ID 显式写入临时部署配置。
+
+### 5. 配置可选 GitHub Variables
+
+在以下位置添加：
+
+**Settings → Secrets and variables → Actions → Variables → New repository variable**
+
+| 名称 | 默认值 | 说明 |
 | --- | --- | --- |
-| Account | Workers Scripts | Edit |
+| `DEPLOY_FRONTEND` | `true` | `false` 时不部署 `public/` 前端，只部署代理 Worker |
+| `WHITELIST` | 空 | 允许访问的仓库，多个值用逗号分隔 |
+| `BLACKLIST` | 空 | 禁止访问的仓库，多个值用逗号分隔，优先级高于白名单 |
+| `RATE_LIMITER` | `120` | 每个客户端 IP 每 60 秒允许的请求数，必须为正整数 |
 
-在 **Account Resources** 中只选择准备部署 FlareHub 的 Cloudflare 账户。无需添加 Zone、DNS、账户管理或其他无关权限。
-
-创建后立即复制 Token。Cloudflare 只会完整显示一次。Token 必须保存为 GitHub Actions Secret，不能放入普通 Variable、仓库文件、Issue 或日志。
-
-### 3. 获取 Cloudflare Account ID
-
-在 Cloudflare Dashboard 对应账户页面复制 `Account ID`。它用于指定部署目标，本项目统一将其保存为 GitHub Actions Secret。
-
-### 4. 配置 GitHub Actions
-
-进入 Fork 仓库：
+访问规则格式：
 
 ```text
-Settings → Secrets and variables → Actions
+owner/repo,another-owner/*
 ```
 
-在 **Secrets** 中添加：
+- `owner/repo`：匹配单个仓库或镜像仓库。
+- `owner/*`：匹配该所有者下的全部仓库。
+- 白名单为空时默认允许所有仓库。
+- 黑名单始终优先。
 
-| 名称 | 必填 | 说明 |
-| --- | --- | --- |
-| `CF_API_TOKEN` | 是 | 具有 `Account → Workers Scripts → Edit` 权限的 Cloudflare API Token |
+### 6. 运行部署
 
-在 **Variables** 中添加：
+配置完成后，可向 `main` 推送提交，或手动运行部署工作流。
 
-| 名称 | 必填 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `CF_ACCOUNT_ID` | 是 | 无 | 目标 Cloudflare Account ID |
-| `DEPLOY_FRONTEND` | 否 | `true` | `true` 部署前端；`false` 只部署 Worker |
-| `WHITELIST` | 否 | 空 | 允许访问的仓库规则，支持逗号或换行分隔 |
-| `BLACKLIST` | 否 | 空 | 禁止访问的仓库规则，支持逗号或换行分隔，优先于白名单 |
-| `RATE_LIMITER` | 否 | `120` | 每个客户端 IP、每类请求每分钟允许的最大次数，必须为正整数 |
+每次 Actions 部署会：
 
-白名单和黑名单支持 `*` 通配符，例如：
+1. 获取 `main` 分支代码。
+2. 使用当时最新的稳定版 Node.js。
+3. 安装 `package.json` 范围内的最新兼容依赖，并额外安装最新版 Wrangler；部署不使用锁文件固定依赖版本。
+4. 运行生产 JavaScript 文件的语法检查。
+5. 将 `compatibility_date` 设置为部署当天的 UTC 日期。
+6. 根据 GitHub Variables 生成临时 Wrangler 配置。
+7. 使用 `CF_API_TOKEN` 和 `CF_ACCOUNT_ID` 部署名为 `flarehub` 的 Worker。
 
-```text
-owner/*
-owner/repository
-```
+部署完成后，在 Cloudflare Dashboard 的 **Workers & Pages** 中打开 `flarehub`，即可查看 `workers.dev` 地址或配置自定义域名。
 
-未设置 `WHITELIST` 表示默认允许所有仓库。`BLACKLIST` 始终优先。
+### 认证错误排查
 
-`RATE_LIMITER` 仓库 Variable 会在部署前写入 Cloudflare Rate Limiting binding 的 `limit`，周期固定为 60 秒。它不是 Worker 中的普通字符串变量。
+如果 Actions 出现 `Authentication error [code: 10000]`，依次确认：
 
-### 5. 选择是否部署前端
+1. `CF_API_TOKEN` 保存的是创建完成时只显示一次的 Token Secret，没有额外引号或空格。
+2. Token 使用 **Edit Cloudflare Workers** 模板创建。
+3. Token 的账户资源包含 `CF_ACCOUNT_ID` 对应账户。
+4. `CF_ACCOUNT_ID` 是 Account ID，不是 Zone ID。
+5. Token 仍然有效；如有疑问，可重新创建 Token 并更新 GitHub Secret。
 
-- 未设置 `DEPLOY_FRONTEND` 或设为 `true`：部署 Worker 和 `public/` 前端，并创建 `ASSETS` binding。
-- 设为 `false`：只部署 Worker，不上传 `public/`。代理、API 和 Registry 路由正常工作，其他页面路径返回 `404`。
-
-### 6. 开始部署
-
-进入：
-
-```text
-Actions → Deploy to Cloudflare Workers → Run workflow
-```
-
-也可以向 `main` 分支推送提交触发部署。
-
-每次工作流都会：
-
-1. 使用当时最新的稳定版 Node.js。
-2. 根据 `package.json` 安装当时最新的兼容依赖，并额外安装最新版本的 Wrangler；不使用锁文件固定部署依赖版本。
-3. 运行全部生产 JavaScript 文件的语法检查，失败时停止部署。
-4. 将 `compatibility_date` 设置为部署当天的 UTC 日期。
-5. 将仓库 Variables 写入临时 Wrangler 配置。
-6. 使用最新 Wrangler 部署名为 `flarehub` 的 Worker。
-
-Cloudflare Token 只注入配置检查和最终部署步骤，不会提供给依赖安装或测试步骤。工作流不会修改或提交 `wrangler.jsonc`、`package-lock.json` 和仓库代码。
-
-## 本地开发
-
-要求 Node.js 22 或更高版本。
-
-```bash
-npm install
-npm run check
-npm run dev
-```
-
-本地部署：
-
-```bash
-npm run deploy
-```
-
-本地部署检查：
-
-```bash
-npx wrangler deploy --dry-run
-```
-
-本地命令直接使用 `wrangler.jsonc`。自动更新依赖和当天 `compatibility_date` 的行为仅用于 GitHub Actions 部署。
-
-## 配置说明
-
-`wrangler.jsonc` 包含以下配置：
-
-- Worker 名称固定为 `flarehub`。
-- `WHITELIST` 和 `BLACKLIST` 是运行时字符串 Variables。
-- `RATE_LIMITER` 是 Cloudflare Rate Limiting binding，默认限制为每分钟 120 次。
-- `ASSETS` 是可选静态资源 binding，只在部署前端时存在。
-
-Registry 上游地址是 `src/registry.js` 中的固定安全映射。以下名称不是有效环境变量，无需在 GitHub 或 Cloudflare 中设置：
-
-- `DOCKER_REGISTRY`
-- `GHCR_REGISTRY`
-- `GCR_REGISTRY`
-- `QUAY_REGISTRY`
-- `K8S_REGISTRY`
-
-## 安全说明
-
-- 仅允许代理预先配置的 HTTPS 主机和 Registry。
-- Cookie、Origin、Referer、逐跳请求头和 Cloudflare 内部请求头不会转发给资源上游。
-- GitHub 跨主机重定向不会携带原始 Authorization。
-- Registry 认证请求及 `401` 响应禁止公共缓存。
-- 白名单和黑名单在 Worker 服务端执行。
-- Cloudflare API Token 遵循最小权限原则，并仅保存于 GitHub Secret。
+修正 Secret 或 Token 后，重新运行失败的工作流即可。

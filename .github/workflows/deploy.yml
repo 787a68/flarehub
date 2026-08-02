@@ -50,6 +50,7 @@ jobs:
 
       - name: Prepare deployment
         env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           DEPLOY_FRONTEND: ${{ vars.DEPLOY_FRONTEND }}
           WHITELIST: ${{ vars.WHITELIST }}
           BLACKLIST: ${{ vars.BLACKLIST }}

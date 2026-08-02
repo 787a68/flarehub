@@ -9,6 +9,10 @@ config.compatibility_date = new Date().toISOString().slice(0, 10);
 if (config.assets) config.assets.directory = "../public";
 
 const value = (name) => (process.env[name] || "").trim();
+const accountId = value("CF_ACCOUNT_ID");
+if (!accountId) throw new Error("Missing Actions secret: CF_ACCOUNT_ID");
+config.account_id = accountId;
+
 const enabled = (name, fallback = true) => {
   const configured = value(name).toLowerCase();
   if (!configured) return fallback;
