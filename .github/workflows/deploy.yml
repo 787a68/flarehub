@@ -1,0 +1,63 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup latest Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: latest
+          check-latest: true
+
+      - name: Install latest dependencies and Wrangler
+        run: |
+          npm install --package-lock=false
+          npm install --package-lock=false --no-save wrangler@latest
+
+      - name: Check configuration
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          test -n "$CF_API_TOKEN" || { echo "Missing Actions secret: CF_API_TOKEN"; exit 1; }
+          test -n "$CF_ACCOUNT_ID" || { echo "Missing Actions secret: CF_ACCOUNT_ID"; exit 1; }
+
+      - name: Run checks
+        run: npm run check
+
+      - name: Prepare deployment
+        env:
+          DEPLOY_FRONTEND: ${{ vars.DEPLOY_FRONTEND }}
+          WHITELIST: ${{ vars.WHITELIST }}
+          BLACKLIST: ${{ vars.BLACKLIST }}
+          RATE_LIMITER: ${{ vars.RATE_LIMITER }}
+        run: node scripts/prepare-deploy.mjs
+
+      - name: Deploy Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: npx --no-install wrangler deploy --config .wrangler/deploy.jsonc

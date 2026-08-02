@@ -1,0 +1,17 @@
+{
+  "name": "flarehub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "node --check src/worker.js && node --check src/access.js && node --check src/dockerhub.js && node --check src/github.js && node --check src/huggingface.js && node --check src/image-download.js && node --check src/http.js && node --check src/registry.js && node --check scripts/prepare-deploy.mjs && node --check public/app.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.27.0"
+  }
+}
