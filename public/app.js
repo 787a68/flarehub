@@ -23,6 +23,29 @@ function keywordAllowed(value) {
   return whitelist.length === 0 || whitelist.some((keyword) => target.includes(keyword));
 }
 
+function renderPolicyChips(targetId, values, emptyText) {
+  const target = $(targetId);
+  target.replaceChildren();
+  if (!values.length) {
+    const empty = document.createElement('code');
+    empty.className = 'muted';
+    empty.textContent = emptyText;
+    target.append(empty);
+    return;
+  }
+  values.forEach((value) => {
+    const chip = document.createElement('code');
+    chip.textContent = value;
+    target.append(chip);
+  });
+}
+
+function renderAccessPolicy() {
+  renderPolicyChips('whitelistChips', accessPolicy.whitelist, '未设置（允许全部）');
+  renderPolicyChips('blacklistChips', accessPolicy.blacklist, '未设置');
+  $('policyMatchMode').textContent = `关键词包含匹配，${accessPolicy.caseInsensitive ? '忽略' : '区分'}大小写`;
+}
+
 function showToast(message) {
   const toast = $('toast');
   toast.textContent = message;
@@ -65,8 +88,21 @@ function formatGithubLink() {
   $('githubOutput').classList.remove('hidden');
 }
 
-$('formatButton').addEventListener('click', formatGithubLink);
-$('githubLinkInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') formatGithubLink(); });
+$('proxyForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  formatGithubLink();
+});
+$('pasteConvertButton').addEventListener('click', async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text.trim()) return showToast('剪贴板中没有链接');
+    $('githubLinkInput').value = text.trim();
+    formatGithubLink();
+  } catch {
+    $('githubLinkInput').focus();
+    showToast('无法读取剪贴板，请粘贴链接后按回车');
+  }
+});
 $('copyButton').addEventListener('click', () => copy($('githubFormattedLink').textContent));
 $('openButton').addEventListener('click', () => window.open($('githubFormattedLink').textContent, '_blank', 'noopener'));
 
@@ -95,9 +131,11 @@ $('usageExamples').innerHTML = [
 let searchItems = [];
 let searchPage = 1;
 let searchQuery = '';
+let searchSort = 'relevance';
 let searchHasNext = false;
 $('searchButton').addEventListener('click', search);
 $('searchInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') search(); });
+$('searchSort').addEventListener('change', () => search());
 $('backToSearch').addEventListener('click', () => {
   $('tagList').innerHTML = '';
   $('searchResults').classList.remove('hidden');
@@ -107,9 +145,11 @@ $('backToSearch').addEventListener('click', () => {
 async function search(options = {}) {
   const append = Boolean(options.append);
   const query = $('searchInput').value.trim();
+  const sort = $('searchSort').value;
   if (!query) return showToast('请输入搜索关键词');
-  if (!append || query !== searchQuery) {
+  if (!append || query !== searchQuery || sort !== searchSort) {
     searchQuery = query;
+    searchSort = sort;
     searchPage = 1;
     searchItems = [];
   }
@@ -120,7 +160,9 @@ async function search(options = {}) {
     const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&page=${searchPage}&page_size=25`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `搜索失败 (${response.status})`);
-    const results = (data.results || []).filter((item) => keywordAllowed(item.repo_name || item.name || ''));
+    let results = (data.results || []).filter((item) => keywordAllowed(item.repo_name || item.name || ''));
+    if (searchSort === 'pulls') results = [...results].sort((a, b) => Number(b.pull_count || 0) - Number(a.pull_count || 0));
+    if (searchSort === 'name') results = [...results].sort((a, b) => String(a.repo_name || a.name || '').localeCompare(String(b.repo_name || b.name || '')));
     searchItems = append ? searchItems.concat(results) : results;
     searchHasNext = Boolean(data.next);
     const total = Number(data.count || searchItems.length);
@@ -180,34 +222,57 @@ function setLoading(loading) {
 }
 
 let hfItems = [];
-$('hfSearchButton').addEventListener('click', searchModels);
+let hfCursor = '';
+let hfQuery = '';
+let hfSort = 'relevance';
+let hfHasNext = false;
+$('hfSearchButton').addEventListener('click', () => searchModels());
 $('hfSearchInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') searchModels(); });
+$('hfSearchSort').addEventListener('change', () => searchModels());
 $('backToModels').addEventListener('click', () => {
   $('hfFiles').innerHTML = '';
   $('hfResults').classList.remove('hidden');
   $('backToModels').classList.add('hidden');
 });
 
-async function searchModels() {
+async function searchModels(options = {}) {
+  const append = Boolean(options.append);
   const query = $('hfSearchInput').value.trim();
+  const sort = $('hfSearchSort').value;
   if (!query) return showToast('请输入模型关键词');
+  if (!append || query !== hfQuery || sort !== hfSort) {
+    hfQuery = query;
+    hfSort = sort;
+    hfCursor = '';
+    hfItems = [];
+  }
   setHfLoading(true);
   $('hfFiles').innerHTML = '';
   $('backToModels').classList.add('hidden');
   try {
-    const response = await fetch(`/api/hf/search?q=${encodeURIComponent(query)}&limit=30`);
+    const cursor = append && hfCursor ? `&cursor=${encodeURIComponent(hfCursor)}` : '';
+    const response = await fetch(`/api/hf/search?q=${encodeURIComponent(query)}&sort=${encodeURIComponent(hfSort)}&limit=30${cursor}`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || `模型搜索失败 (${response.status})`);
-    hfItems = (data.results || []).filter((item) => keywordAllowed(item.id || ''));
-    $('hfResults').innerHTML = hfItems.length ? `<div class="results-header">找到 ${hfItems.length} 个公开模型</div><div class="image-grid">${hfItems.map((item, index) => `<button class="image-card" data-index="${index}" type="button"><div class="image-name">${esc(item.id)}</div><p>${esc(item.pipeline_tag || '未标注任务类型')}</p><div class="image-meta"><span>${Number(item.downloads || 0).toLocaleString()} 次下载</span><span>${Number(item.likes || 0).toLocaleString()} 个赞</span></div></button>`).join('')}</div>` : '<div class="empty">未找到相关模型</div>';
+    const results = (data.results || []).filter((item) => keywordAllowed(item.id || ''));
+    hfItems = append ? hfItems.concat(results) : results;
+    hfCursor = data.next || '';
+    hfHasNext = Boolean(hfCursor);
+    $('hfResults').innerHTML = hfItems.length ? `<div class="results-header">已显示 ${hfItems.length} 个公开模型</div><div class="image-grid">${hfItems.map((item, index) => `<button class="image-card" data-index="${index}" type="button"><div class="image-name">${esc(item.id)}</div><p>${esc(item.pipeline_tag || '未标注任务类型')}</p><div class="image-meta"><span>${Number(item.downloads || 0).toLocaleString()} 次下载</span><span>${Number(item.likes || 0).toLocaleString()} 个赞</span></div></button>`).join('')}</div>${hfHasNext ? '<button class="btn btn-ghost load-more" id="loadMoreModels" type="button">加载更多</button>' : ''}` : '<div class="empty">未找到相关模型</div>';
   } catch (error) {
-    $('hfResults').innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    if (!append) $('hfResults').innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    else showToast(error.message);
   } finally {
     setHfLoading(false);
   }
 }
 
 $('hfResults').addEventListener('click', (event) => {
+  const loadMore = event.target.closest('#loadMoreModels');
+  if (loadMore && hfHasNext) {
+    searchModels({ append: true });
+    return;
+  }
   const card = event.target.closest('.image-card');
   if (card) loadModelFiles(hfItems[Number(card.dataset.index)]?.id);
 });
@@ -220,7 +285,8 @@ async function loadModelFiles(repo) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || '获取模型文件失败');
     const files = data.files || [];
-    $('hfFiles').innerHTML = `<div class="card glass compact"><div class="card-title">${esc(repo)}</div><div class="card-desc">main 分支 · ${files.length} 个文件</div></div><div class="file-list">${files.map((file) => {
+    const cliCommand = `hf download ${repo} --local-dir ${repo.split('/').pop() || 'model'}`;
+    $('hfFiles').innerHTML = `<div class="card glass compact"><div class="card-title">${esc(repo)}</div><div class="card-desc">main 分支 · ${files.length} 个文件</div><div class="cmd-box model-download-command">${esc(cliCommand)}<button class="btn btn-ghost btn-sm copy-hf-link" data-copy-command="${esc(cliCommand)}" type="button">复制整仓下载命令</button></div><div class="card-desc">模型通常包含大文件，浏览器端打包易超出 Workers 内存与时限；使用 Hugging Face CLI 可断点续传并完整下载。</div></div><div class="file-list">${files.map((file) => {
       const filename = file.name.split('/').pop() || 'download';
       const downloadUrl = `${file.url}${file.url.includes('?') ? '&' : '?'}__flarehub_download=1`;
       return `<div class="file-item"><div><strong>${esc(file.name)}</strong><span>${formatBytes(file.size)}</span></div><div class="inline-actions"><button class="btn btn-ghost btn-sm copy-hf-link" data-url="${esc(downloadUrl)}" type="button">复制链接</button><a class="btn btn-primary btn-sm" href="${esc(downloadUrl)}" download="${esc(filename)}">下载</a></div></div>`;
@@ -237,7 +303,9 @@ async function loadModelFiles(repo) {
 
 $('hfFiles').addEventListener('click', (event) => {
   const button = event.target.closest('.copy-hf-link');
-  if (button) copy(new URL(button.dataset.url, location.origin).href);
+  if (!button) return;
+  if (button.dataset.copyCommand) copy(button.dataset.copyCommand);
+  else copy(new URL(button.dataset.url, location.origin).href);
 });
 
 function formatBytes(value) {
@@ -255,6 +323,7 @@ function setHfLoading(loading) {
 function initialize() {
   const initialView = location.hash.slice(1);
   if (initialView === 'search' || initialView === 'models') switchView(initialView);
+  renderAccessPolicy();
   formatGithubLink();
 }
 

@@ -8,7 +8,7 @@ export async function searchImages(request, env) {
   const pageSize = clampInt(url.searchParams.get("page_size"), 1, 100, 25);
   if (!query) throw new HttpError(400, "搜索关键词不能为空");
 
-  const target = new URL("https://hub.docker.com/v2/search/repositories/");
+  const target = new URL("https://registry.hub.docker.com/v2/search/repositories/");
   target.searchParams.set("query", query);
   target.searchParams.set("page", String(page));
   target.searchParams.set("page_size", String(pageSize));

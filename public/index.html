@@ -22,6 +22,25 @@
   </div>
 </nav>
 <main class="main">
+  <section class="card glass compact" aria-labelledby="accessPolicyTitle">
+    <h2 class="card-title" id="accessPolicyTitle">全局访问规则</h2>
+    <p class="card-desc">以下黑白名单对 GitHub、Docker 与 Hugging Face 的代理、搜索和下载统一生效，黑名单优先。</p>
+    <div class="policy-grid">
+      <div class="policy-item">
+        <span>白名单</span>
+        <div class="chips" id="whitelistChips" aria-live="polite"></div>
+      </div>
+      <div class="policy-item">
+        <span>黑名单</span>
+        <div class="chips" id="blacklistChips" aria-live="polite"></div>
+      </div>
+    </div>
+    <div class="usage-row">
+      <span class="usage-badge">匹配方式</span>
+      <code id="policyMatchMode">关键词包含匹配，区分大小写</code>
+    </div>
+  </section>
+
   <section class="view active" id="view-github">
     <div class="hero">
       <h1 class="hero-title">GitHub、Docker 与 Hugging Face 加速</h1>
@@ -29,13 +48,13 @@
     </div>
     <div class="card glass">
       <div class="card-title">快速转换加速链接</div>
-      <div class="card-desc">支持 GitHub、Docker 官方下载及 Hugging Face HTTPS 资源地址。</div>
-      <div class="form-group">
-        <div class="field">
-          <input type="text" class="input" id="githubLinkInput" value="https://github.com/787a68/flarehub/archive/refs/heads/main.zip" aria-label="上游资源地址">
-          <button class="btn btn-primary" id="formatButton">获取加速链接</button>
+      <div class="card-desc">点击按钮读取剪贴板并转换；也可自定义输入支持的 HTTPS 地址后按回车。</div>
+      <form class="form-group" id="proxyForm" novalidate>
+        <div class="field quick-field">
+          <input type="url" class="input" id="githubLinkInput" placeholder="粘贴或输入资源链接" aria-label="上游资源地址" autocomplete="url">
+          <button class="btn btn-primary" id="pasteConvertButton" type="button">粘贴并转换</button>
         </div>
-      </div>
+      </form>
       <div class="output" id="githubOutput">
         <div class="output-box" id="githubFormattedLink"></div>
         <div class="output-actions">
@@ -56,8 +75,13 @@
       <p class="hero-sub">搜索 Docker Hub 公开镜像并查看可用标签。</p>
     </div>
     <div class="card glass">
-      <div class="field">
+      <div class="field search-field">
         <input type="text" class="input" id="searchInput" placeholder="输入镜像名称搜索...">
+        <select class="select" id="searchSort" aria-label="镜像排序">
+          <option value="relevance">相关度排序</option>
+          <option value="pulls">拉取量从高到低</option>
+          <option value="name">名称排序</option>
+        </select>
         <button class="btn btn-primary" id="searchButton">搜索</button>
       </div>
     </div>
@@ -72,8 +96,14 @@
       <p class="hero-sub">搜索 Hugging Face 公开模型，浏览仓库文件并通过本站下载。</p>
     </div>
     <div class="card glass">
-      <div class="field">
+      <div class="field search-field">
         <input type="text" class="input" id="hfSearchInput" placeholder="输入模型名称搜索...">
+        <select class="select" id="hfSearchSort" aria-label="模型排序">
+          <option value="relevance">相关度排序</option>
+          <option value="downloads">下载量从高到低</option>
+          <option value="likes">点赞数从高到低</option>
+          <option value="lastModified">最近更新</option>
+        </select>
         <button class="btn btn-primary" id="hfSearchButton" type="button">搜索</button>
       </div>
     </div>

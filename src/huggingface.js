@@ -25,11 +25,18 @@ export async function searchHuggingFace(request, env = {}) {
   if (!query) throw new HttpError(400, "请输入模型关键词");
 
   const limit = clampInt(input.searchParams.get("limit"), 1, 30, 12);
+  const sort = (input.searchParams.get("sort") || "downloads").trim();
+  const allowedSorts = new Set(["relevance", "downloads", "likes", "lastModified"]);
+  if (!allowedSorts.has(sort)) throw new HttpError(400, "不支持的模型排序方式");
   const upstream = new URL("https://huggingface.co/api/models");
   upstream.searchParams.set("search", query);
-  upstream.searchParams.set("sort", "downloads");
-  upstream.searchParams.set("direction", "-1");
+  if (sort !== "relevance") {
+    upstream.searchParams.set("sort", sort);
+    upstream.searchParams.set("direction", "-1");
+  }
   upstream.searchParams.set("limit", String(limit));
+  const cursor = (input.searchParams.get("cursor") || "").trim();
+  if (cursor) upstream.searchParams.set("cursor", cursor);
 
   const response = await fetchUpstream(upstream, { headers: { accept: "application/json" } });
   if (!response.ok) throw new HttpError(response.status, "Hugging Face 搜索失败");
@@ -39,7 +46,21 @@ export async function searchHuggingFace(request, env = {}) {
     .filter((model) => !model.private && /^[\w.-]+\/[\w.-]+$/.test(model.id || model.modelId || ""))
     .filter((model) => accessAllowed(model.id || model.modelId || "", env))
     .map(modelSummary);
-  return json({ results, count: results.length });
+  return json({ results, count: results.length, next: nextCursor(response.headers.get("link")) });
+}
+
+function nextCursor(link) {
+  if (!link) return "";
+  for (const part of link.split(",")) {
+    const match = part.match(/<([^>]+)>\s*;\s*rel="?next"?/i);
+    if (!match) continue;
+    try {
+      return new URL(match[1]).searchParams.get("cursor") || "";
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 export async function huggingFaceFiles(request, env = {}) {
