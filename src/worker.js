@@ -1,4 +1,3 @@
-import { publicAccessConfig } from "./access.js";
 import { searchImages, listTags } from "./dockerhub.js";
 import { ENTRY_HOSTS, proxyGithub } from "./github.js";
 import { huggingFaceFiles, searchHuggingFace } from "./huggingface.js";
@@ -6,7 +5,7 @@ import { downloadDockerImage } from "./image-download.js";
 import { HttpError, json, preflight } from "./http.js";
 import { proxyRegistry, proxyRegistryToken } from "./registry.js";
 
-export { accessAllowed, matchWildcard } from "./access.js";
+export { accessAllowed } from "./access.js";
 export { githubRepository, githubTargetFromRequest, parseGithubTarget } from "./github.js";
 export { parseRegistryRequest, registryConfig, registryRepository } from "./registry.js";
 
@@ -29,24 +28,21 @@ export default {
 
 async function enforceRateLimit(request, env) {
   if (!env.RATE_LIMITER) return;
-  const url = new URL(request.url);
   const actor = request.headers.get("cf-connecting-ip") || "anonymous";
-  const group = url.pathname.startsWith("/api/") ? "api" : "proxy";
-  const { success } = await env.RATE_LIMITER.limit({ key: `${actor}:${group}` });
+  const { success } = await env.RATE_LIMITER.limit({ key: actor });
   if (!success) throw new HttpError(429, "请求过于频繁，请稍后再试");
 }
 
 async function route(request, env) {
   const url = new URL(request.url);
+  await enforceRateLimit(request, env);
   if (request.method === "OPTIONS") {
     const methods = url.pathname === "/v2" || url.pathname.startsWith("/v2/")
       ? "GET, HEAD, PUT, POST, PATCH, DELETE, OPTIONS"
       : "GET, HEAD, OPTIONS";
     return preflight(methods);
   }
-  if (url.pathname === "/api/config") return json({ access: publicAccessConfig(env) });
 
-  await enforceRateLimit(request, env);
   if (url.pathname === "/api/search") return searchImages(request, env);
   if (url.pathname === "/api/tags") return listTags(request, env);
   if (url.pathname === "/api/hf/search") return searchHuggingFace(request, env);

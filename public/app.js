@@ -1,206 +1,261 @@
-const byId = id => document.getElementById(id);
-const esc = value => String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
-const formatNumber = value => new Intl.NumberFormat("zh-CN", { notation: "compact" }).format(Number(value || 0));
-const formatBytes = value => {
-  const bytes = Number(value || 0);
-  if (!bytes) return "未知大小";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const power = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / (1024 ** power)).toFixed(power ? 1 : 0)} ${units[power]}`;
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+const ALLOWED_HOSTS = new Set([
+  'github.com', 'www.github.com', 'raw.githubusercontent.com', 'api.github.com',
+  'codeload.github.com', 'github.githubassets.com', 'gist.github.com',
+  'download.docker.com', 'huggingface.co', 'cdn-lfs.hf.co',
+]);
+const frontendConfig = globalThis.FLAREHUB_CONFIG || {};
+const accessPolicy = {
+  whitelist: Array.isArray(frontendConfig.whitelist) ? frontendConfig.whitelist : [],
+  blacklist: Array.isArray(frontendConfig.blacklist) ? frontendConfig.blacklist : [],
+  caseInsensitive: frontendConfig.caseInsensitive === true,
 };
 
-const state = { policy: { whitelist: [], blacklist: [] }, dockerResults: [], hfResults: [] };
-const ALLOWED_HOSTS = new Set([
-  "github.com", "api.github.com", "raw.githubusercontent.com", "codeload.github.com", "github.githubassets.com",
-  "gist.github.com", "download.docker.com", "huggingface.co", "cdn-lfs.hf.co"
-]);
+function keywordAllowed(value) {
+  const normalize = (item) => accessPolicy.caseInsensitive ? String(item).toLowerCase() : String(item);
+  const target = normalize(value || '');
+  const whitelist = accessPolicy.whitelist.map(normalize).filter(Boolean);
+  const blacklist = accessPolicy.blacklist.map(normalize).filter(Boolean);
+  if (blacklist.some((keyword) => target.includes(keyword))) return false;
+  return whitelist.length === 0 || whitelist.some((keyword) => target.includes(keyword));
+}
 
-function showToast(message, type = "success") {
-  const toast = byId("toast");
+function showToast(message) {
+  const toast = $('toast');
   toast.textContent = message;
-  toast.className = `toast show ${type}`;
+  toast.classList.add('show');
   clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => { toast.className = "toast"; }, 2300);
+  showToast.timer = setTimeout(() => toast.classList.remove('show'), 2200);
 }
 
-async function api(url) {
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `请求失败 (${response.status})`);
-  return body;
-}
-
-function wildcard(value, pattern) {
-  const source = String(pattern).replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*");
-  return new RegExp(`^${source}$`, "i").test(value);
-}
-
-function policyIdentity(url) {
-  const parts = url.pathname.split("/").filter(Boolean);
-  if (url.hostname === "huggingface.co" && parts.length >= 2) return `${parts[0]}/${parts[1]}`;
-  if (["github.com", "api.github.com", "raw.githubusercontent.com", "codeload.github.com", "objects.githubusercontent.com", "gist.github.com", "gist.githubusercontent.com"].includes(url.hostname) && parts.length >= 2) return `${parts[0]}/${parts[1]}`;
-  return "";
-}
-
-function isAllowedUpstream(url) {
-  return url.protocol === "https:" && (!url.port || url.port === "443") && ALLOWED_HOSTS.has(url.hostname);
-}
-
-function validatePolicy(identity) {
-  if (!identity) return;
-  if (state.policy.blacklist.some(rule => wildcard(identity, rule))) throw new Error(`仓库 ${identity} 已被加入黑名单`);
-  if (state.policy.whitelist.length && !state.policy.whitelist.some(rule => wildcard(identity, rule))) throw new Error(`仓库 ${identity} 不在白名单中`);
-}
-
-function proxyUrl(input) {
-  const source = input.trim();
-  if (!source) throw new Error("请先粘贴或输入资源链接");
-  let url;
-  try { url = new URL(source); } catch { throw new Error("请输入完整的 HTTPS 链接"); }
-  if (!isAllowedUpstream(url)) throw new Error("当前仅支持页面列出的 GitHub、Docker 下载与 Hugging Face 主机");
-  validatePolicy(policyIdentity(url));
-  return `${location.origin}/${url.hostname}${url.pathname}${url.search}${url.hash}`;
-}
-
-function switchView(view) {
-  document.querySelectorAll(".nav-tab").forEach(tab => tab.classList.toggle("active", tab.dataset.view === view));
-  document.querySelectorAll(".view").forEach(panel => panel.classList.toggle("active", panel.id === `view-${view}`));
-}
-
-document.querySelectorAll(".nav-tab").forEach(tab => tab.addEventListener("click", () => switchView(tab.dataset.view)));
-
-function renderProxyLink() {
+async function copy(text) {
   try {
-    const output = proxyUrl(byId("githubLinkInput").value);
-    byId("githubFormattedLink").textContent = output;
-    byId("githubOutput").classList.remove("hidden");
-    return true;
-  } catch (error) {
-    byId("githubOutput").classList.add("hidden");
-    showToast(error.message, "error");
-    return false;
+    await navigator.clipboard.writeText(text);
+    showToast('已复制');
+  } catch {
+    showToast('复制失败');
   }
 }
 
-byId("proxyForm").addEventListener("submit", event => {
-  event.preventDefault();
-  renderProxyLink();
-});
+function switchView(name) {
+  document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === `view-${name}`));
+  document.querySelectorAll('.nav-tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.view === name));
+  history.replaceState(null, '', `#${name}`);
+  window.scrollTo(0, 0);
+}
 
-byId("pasteConvertButton").addEventListener("click", async () => {
-  const button = byId("pasteConvertButton");
+document.querySelectorAll('.nav-tab').forEach((tab) => tab.addEventListener('click', () => switchView(tab.dataset.view)));
+
+function formatGithubLink() {
+  let link = $('githubLinkInput').value.trim();
+  if (!link) return showToast('请输入链接');
+  if (!/^https?:\/\//i.test(link)) link = `https://${link}`;
+  let target;
   try {
-    button.disabled = true;
-    let text = byId("githubLinkInput").value.trim();
-    if (!text) {
-      if (!navigator.clipboard?.readText) throw new Error("当前浏览器不支持读取剪贴板，请手动粘贴链接");
-      text = (await navigator.clipboard.readText()).trim();
-      if (!text) throw new Error("剪贴板中没有可转换的链接");
-      byId("githubLinkInput").value = text;
-    }
-    if (renderProxyLink()) showToast("链接已转换");
-  } catch (error) {
-    const clipboardDenied = error.name === "NotAllowedError" || error.message === "Read permission denied";
-    showToast(clipboardDenied ? "无法读取剪贴板，请手动粘贴链接" : error.message, "error");
-    byId("githubLinkInput").focus();
-  } finally {
-    button.disabled = false;
+    target = new URL(link);
+  } catch {
+    return showToast('链接格式错误');
   }
-});
+  if (target.protocol !== 'https:' || !ALLOWED_HOSTS.has(target.hostname.toLowerCase())) return showToast('请输入支持的 HTTPS 上游链接');
+  if (!keywordAllowed(`${target.hostname}${target.pathname}`)) return showToast('该资源不符合访问规则');
+  $('githubFormattedLink').textContent = `${location.origin}/${link}`;
+  $('githubOutput').classList.remove('hidden');
+}
 
-byId("copyButton").addEventListener("click", async () => {
-  try { await navigator.clipboard.writeText(byId("githubFormattedLink").textContent); showToast("链接已复制"); }
-  catch { showToast("复制失败，请手动复制", "error"); }
-});
-byId("openButton").addEventListener("click", () => window.open(byId("githubFormattedLink").textContent, "_blank", "noopener,noreferrer"));
+$('formatButton').addEventListener('click', formatGithubLink);
+$('githubLinkInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') formatGithubLink(); });
+$('copyButton').addEventListener('click', () => copy($('githubFormattedLink').textContent));
+$('openButton').addEventListener('click', () => window.open($('githubFormattedLink').textContent, '_blank', 'noopener'));
 
 const host = location.host;
-const base = location.origin;
-const examples = [
-  ["GitHub Release", `${base}/github.com/owner/repo/releases/download/v1.0/file.zip`], ["GitHub Archive", `${base}/github.com/owner/repo/archive/refs/heads/main.zip`],
-  ["GitHub Codeload", `${base}/codeload.github.com/owner/repo/zip/refs/heads/main`], ["GitHub Raw", `${base}/raw.githubusercontent.com/owner/repo/main/README.md`],
-  ["GitHub Blob", `${base}/github.com/owner/repo/blob/main/README.md`], ["GitHub Gist", `${base}/gist.github.com/owner/id`],
-  ["GitHub API", `${base}/api.github.com/repos/owner/repo/releases/latest`], ["GitHub Assets", `${base}/github.githubassets.com/assets/example.css`],
-  ["Docker 官方镜像", `docker pull ${host}/library/nginx:latest`], ["Docker 用户镜像", `docker pull ${host}/owner/image:tag`],
-  ["GitHub Container", `docker pull ${host}/ghcr.io/owner/image:tag`], ["Google Container", `docker pull ${host}/gcr.io/project/image:tag`],
-  ["Quay", `docker pull ${host}/quay.io/owner/image:tag`], ["Kubernetes", `docker pull ${host}/registry.k8s.io/pause:latest`],
-  ["Docker 二进制", `${base}/download.docker.com/linux/static/stable/x86_64/docker.tgz`], ["HF 模型", `${base}/huggingface.co/owner/model/resolve/main/model.safetensors`],
-  ["HF Spaces", `${base}/huggingface.co/spaces/owner/app/resolve/main/file`], ["HF CDN", `${base}/cdn-lfs.hf.co/path/to/file`]
-];
-byId("usageExamples").innerHTML = examples.map(([title, value]) => `<div class="usage-row"><span class="usage-badge">${esc(title)}</span><code>${esc(value)}</code></div>`).join("");
+$('usageExamples').innerHTML = [
+  ['GitHub Release', `https://${host}/github.com/user/repo/releases/download/v1.0/file.zip`],
+  ['GitHub Archive', `https://${host}/github.com/user/repo/archive/refs/tags/v1.0.tar.gz`],
+  ['GitHub Codeload', `https://${host}/codeload.github.com/user/repo/zip/refs/heads/master`],
+  ['GitHub Raw', `https://${host}/raw.githubusercontent.com/user/repo/main/file.go`],
+  ['GitHub Blob（自动转 Raw）', `https://${host}/github.com/user/repo/blob/main/file.go`],
+  ['GitHub Gist', `https://${host}/gist.github.com/user/gist_id/raw`],
+  ['GitHub API', `https://${host}/api.github.com/repos/user/repo/releases`],
+  ['GitHub Assets', `https://${host}/github.githubassets.com/assets/123.js`],
+  ['Docker 官方镜像', `docker pull ${host}/nginx`],
+  ['Docker 用户镜像', `docker pull ${host}/user/image`],
+  ['GHCR 镜像', `docker pull ${host}/ghcr.io/user/image`],
+  ['GCR 镜像', `docker pull ${host}/gcr.io/project/image`],
+  ['Quay.io 镜像', `docker pull ${host}/quay.io/org/image`],
+  ['Kubernetes 镜像', `docker pull ${host}/registry.k8s.io/pause:3.9`],
+  ['Docker 二进制', `https://${host}/download.docker.com/linux/static/stable/x86_64/docker.tgz`],
+  ['Hugging Face', `https://${host}/huggingface.co/user/model/resolve/main/file.bin`],
+  ['HF Spaces', `https://${host}/huggingface.co/spaces/user/space/resolve/main/app.py`],
+  ['HF CDN', `https://${host}/cdn-lfs.hf.co/user/model/file.bin`],
+].map(([title, code]) => `<div class="example"><strong>${title}</strong><code>${esc(code)}</code></div>`).join('');
 
-async function loadPolicy() {
-  try {
-    const data = await api("/api/config");
-    state.policy = data.access || state.policy;
-    const list = (title, values, empty) => `<div class="policy-item"><strong>${title}</strong>${values.length ? `<div class="chips">${values.map(value => `<code>${esc(value)}</code>`).join("")}</div>` : `<span>${empty}</span>`}</div>`;
-    byId("policyContent").innerHTML = list("白名单", state.policy.whitelist, "未启用，默认允许") + list("黑名单", state.policy.blacklist, "未配置");
-  } catch (error) { byId("policyContent").innerHTML = `<div class="empty compact">${esc(error.message)}</div>`; }
-}
-
-byId("dockerSearchForm").addEventListener("submit", event => { event.preventDefault(); searchDocker(); });
-async function searchDocker() {
-  const query = byId("searchInput").value.trim();
-  if (!query) return showToast("请输入镜像关键词", "error");
-  byId("searchLoading").classList.remove("hidden"); byId("searchResults").innerHTML = ""; byId("tagList").innerHTML = "";
-  try {
-    const data = await api(`/api/search?q=${encodeURIComponent(query)}&page_size=24`);
-    state.dockerResults = data.results || [];
-    byId("searchResults").innerHTML = state.dockerResults.length ? `<div class="results-header"><span>找到 ${state.dockerResults.length} 个镜像</span></div><div class="image-grid">${state.dockerResults.map((item, index) => `<button class="image-card" data-docker-index="${index}" type="button"><div class="image-name">${esc(item.repo_name || item.name)}</div><p>${esc(item.short_description || item.description || "暂无描述")}</p><div class="image-meta"><span>下载 ${formatNumber(item.pull_count)}</span><span>收藏 ${formatNumber(item.star_count)}</span></div></button>`).join("")}</div>` : '<div class="empty">未找到镜像</div>';
-  } catch (error) { byId("searchResults").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
-  finally { byId("searchLoading").classList.add("hidden"); }
-}
-byId("searchResults").addEventListener("click", event => { const card = event.target.closest("[data-docker-index]"); if (card) showTags(state.dockerResults[Number(card.dataset.dockerIndex)].name); });
-
-async function showTags(repository) {
-  byId("searchResults").innerHTML = ""; byId("backToSearch").classList.remove("hidden"); byId("searchLoading").classList.remove("hidden");
-  try {
-    const data = await api(`/api/tags?image=${encodeURIComponent(repository)}&page_size=50`);
-    const tags = (data.results || []).map(tag => ({
-      ...tag,
-      size: Math.max(0, ...(tag.images || []).map(image => Number(image.size || 0))),
-      platforms: [...new Set((tag.images || []).filter(image => image.os && image.architecture).map(image => `${image.os}/${image.architecture}${image.variant ? `/${image.variant}` : ""}`))],
-    }));
-    byId("tagList").innerHTML = `<div class="results-header"><span>${esc(repository)} · ${tags.length} 个标签</span></div><div class="tag-list">${tags.map((tag, index) => {
-      const platforms = Array.isArray(tag.platforms) && tag.platforms.length ? tag.platforms : ["linux/amd64"];
-      return `<div class="tag-item"><div class="tag-top"><div><span class="tag-name">${esc(tag.name)}</span><span class="tag-size">${formatBytes(tag.size)}</span></div><button class="btn btn-ghost btn-sm" data-copy-pull="${esc(repository)}:${esc(tag.name)}" type="button">复制拉取命令</button></div><div class="download-row"><select class="select" id="platform-${index}">${platforms.map(platform => `<option value="${esc(platform)}">${esc(platform)}</option>`).join("")}</select><button class="btn btn-primary btn-sm" data-image-download="${esc(repository)}:${esc(tag.name)}" data-platform-select="platform-${index}" type="button">下载 OCI 归档</button></div></div>`;
-    }).join("")}</div>`;
-  } catch (error) { byId("tagList").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
-  finally { byId("searchLoading").classList.add("hidden"); }
-}
-byId("backToSearch").addEventListener("click", () => { byId("backToSearch").classList.add("hidden"); byId("tagList").innerHTML = ""; searchDocker(); });
-byId("tagList").addEventListener("click", async event => {
-  const copy = event.target.closest("[data-copy-pull]");
-  if (copy) { await navigator.clipboard.writeText(`docker pull ${location.host}/${copy.dataset.copyPull}`); return showToast("拉取命令已复制"); }
-  const download = event.target.closest("[data-image-download]");
-  if (download) {
-    const platform = byId(download.dataset.platformSelect).value;
-    location.href = `/api/image/download?image=${encodeURIComponent(download.dataset.imageDownload)}&platform=${encodeURIComponent(platform)}`;
-  }
+let searchItems = [];
+let searchPage = 1;
+let searchQuery = '';
+let searchHasNext = false;
+$('searchButton').addEventListener('click', search);
+$('searchInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') search(); });
+$('backToSearch').addEventListener('click', () => {
+  $('tagList').innerHTML = '';
+  $('searchResults').classList.remove('hidden');
+  $('backToSearch').classList.add('hidden');
 });
 
-byId("hfSearchForm").addEventListener("submit", event => { event.preventDefault(); searchModels(); });
-async function searchModels() {
-  const query = byId("hfSearchInput").value.trim();
-  if (!query) return showToast("请输入模型关键词", "error");
-  byId("hfLoading").classList.remove("hidden"); byId("hfResults").innerHTML = ""; byId("hfFiles").innerHTML = "";
+async function search(options = {}) {
+  const append = Boolean(options.append);
+  const query = $('searchInput').value.trim();
+  if (!query) return showToast('请输入搜索关键词');
+  if (!append || query !== searchQuery) {
+    searchQuery = query;
+    searchPage = 1;
+    searchItems = [];
+  }
+  setLoading(true);
+  $('tagList').innerHTML = '';
+  $('backToSearch').classList.add('hidden');
   try {
-    const data = await api(`/api/hf/search?q=${encodeURIComponent(query)}&limit=24`);
-    state.hfResults = data.results || [];
-    byId("hfResults").innerHTML = state.hfResults.length ? `<div class="results-header"><span>找到 ${state.hfResults.length} 个模型</span></div><div class="image-grid">${state.hfResults.map((model, index) => `<button class="image-card" data-hf-index="${index}" type="button"><div class="image-name">${esc(model.id)}</div><p>${esc(model.pipeline_tag || "未标注任务类型")}</p><div class="image-meta"><span>下载 ${formatNumber(model.downloads)}</span><span>喜欢 ${formatNumber(model.likes)}</span></div></button>`).join("")}</div>` : '<div class="empty">未找到公开模型</div>';
-  } catch (error) { byId("hfResults").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
-  finally { byId("hfLoading").classList.add("hidden"); }
+    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&page=${searchPage}&page_size=25`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `搜索失败 (${response.status})`);
+    const results = (data.results || []).filter((item) => keywordAllowed(item.repo_name || item.name || ''));
+    searchItems = append ? searchItems.concat(results) : results;
+    searchHasNext = Boolean(data.next);
+    const total = Number(data.count || searchItems.length);
+    $('searchResults').innerHTML = searchItems.length ? `<div class="results-header">已显示 ${searchItems.length}${total ? ` / ${total}` : ''} 条结果</div>${searchItems.map((item, index) => {
+      const name = item.repo_name || item.name || '';
+      return `<button class="result-card" data-index="${index}"><span class="result-title">${esc(name)}</span><span class="result-desc">${esc(item.short_description || '暂无描述')}</span><span class="result-meta">${item.is_official ? '官方镜像 · ' : ''}${Number(item.pull_count || 0).toLocaleString()} 次拉取</span></button>`;
+    }).join('')}${searchHasNext ? '<button class="btn btn-ghost load-more" id="loadMoreSearch" type="button">加载更多</button>' : ''}` : '<div class="empty">未找到相关镜像</div>';
+  } catch (error) {
+    if (!append) $('searchResults').innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    else showToast(error.message);
+  } finally {
+    setLoading(false);
+  }
 }
-byId("hfResults").addEventListener("click", event => { const card = event.target.closest("[data-hf-index]"); if (card) showModelFiles(state.hfResults[Number(card.dataset.hfIndex)].id); });
-async function showModelFiles(repo) {
-  byId("hfResults").innerHTML = ""; byId("backToModels").classList.remove("hidden"); byId("hfLoading").classList.remove("hidden");
-  try {
-    const data = await api(`/api/hf/files?repo=${encodeURIComponent(repo)}`);
-    byId("hfFiles").innerHTML = `<div class="results-header"><span>${esc(repo)} · ${data.files.length} 个文件</span></div><div class="file-list">${data.files.map(file => `<div class="file-item"><div><strong>${esc(file.name)}</strong><span>${formatBytes(file.size)}</span></div><div class="inline-actions"><button class="btn btn-ghost btn-sm" data-copy-url="${esc(location.origin + file.url)}" type="button">复制链接</button><a class="btn btn-primary btn-sm" href="${esc(file.url)}">下载</a></div></div>`).join("")}</div>`;
-  } catch (error) { byId("hfFiles").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
-  finally { byId("hfLoading").classList.add("hidden"); }
-}
-byId("backToModels").addEventListener("click", () => { byId("backToModels").classList.add("hidden"); byId("hfFiles").innerHTML = ""; searchModels(); });
-byId("hfFiles").addEventListener("click", async event => { const button = event.target.closest("[data-copy-url]"); if (button) { await navigator.clipboard.writeText(button.dataset.copyUrl); showToast("下载链接已复制"); } });
 
-loadPolicy();
+$('searchResults').addEventListener('click', (event) => {
+  const loadMore = event.target.closest('#loadMoreSearch');
+  if (loadMore && searchHasNext) {
+    searchPage += 1;
+    search({ append: true });
+    return;
+  }
+  const card = event.target.closest('.result-card');
+  if (card) loadTags(searchItems[Number(card.dataset.index)]);
+});
+
+async function loadTags(item) {
+  let image = item.repo_name || item.name || '';
+  if (!image.includes('/')) image = `library/${image}`;
+  setLoading(true);
+  try {
+    const response = await fetch(`/api/tags?image=${encodeURIComponent(image)}&page_size=100`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '标签查询失败');
+    const tags = data.results || [];
+    $('tagList').innerHTML = `<div class="card glass tag-header"><div class="tag-title">${esc(image)}</div><div class="card-desc">最近更新的 ${tags.length} 个标签</div></div>${tags.map((tag) => {
+      const command = `docker pull ${host}/${image}:${tag.name}`;
+      return `<div class="tag-item glass"><div class="tag-name">${esc(tag.name)}</div><div class="cmd-box">${esc(command)}<button class="btn btn-ghost btn-sm cmd-copy" data-copy="${esc(command)}">复制</button></div></div>`;
+    }).join('') || '<div class="empty">暂无标签</div>'}`;
+    $('searchResults').classList.add('hidden');
+    $('backToSearch').classList.remove('hidden');
+    window.scrollTo(0, 0);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setLoading(false);
+  }
+}
+
+$('tagList').addEventListener('click', (event) => {
+  const button = event.target.closest('.cmd-copy');
+  if (button) copy(button.dataset.copy);
+});
+
+function setLoading(loading) {
+  $('searchLoading').classList.toggle('hidden', !loading);
+}
+
+let hfItems = [];
+$('hfSearchButton').addEventListener('click', searchModels);
+$('hfSearchInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') searchModels(); });
+$('backToModels').addEventListener('click', () => {
+  $('hfFiles').innerHTML = '';
+  $('hfResults').classList.remove('hidden');
+  $('backToModels').classList.add('hidden');
+});
+
+async function searchModels() {
+  const query = $('hfSearchInput').value.trim();
+  if (!query) return showToast('请输入模型关键词');
+  setHfLoading(true);
+  $('hfFiles').innerHTML = '';
+  $('backToModels').classList.add('hidden');
+  try {
+    const response = await fetch(`/api/hf/search?q=${encodeURIComponent(query)}&limit=30`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `模型搜索失败 (${response.status})`);
+    hfItems = (data.results || []).filter((item) => keywordAllowed(item.id || ''));
+    $('hfResults').innerHTML = hfItems.length ? `<div class="results-header">找到 ${hfItems.length} 个公开模型</div><div class="image-grid">${hfItems.map((item, index) => `<button class="image-card" data-index="${index}" type="button"><div class="image-name">${esc(item.id)}</div><p>${esc(item.pipeline_tag || '未标注任务类型')}</p><div class="image-meta"><span>${Number(item.downloads || 0).toLocaleString()} 次下载</span><span>${Number(item.likes || 0).toLocaleString()} 个赞</span></div></button>`).join('')}</div>` : '<div class="empty">未找到相关模型</div>';
+  } catch (error) {
+    $('hfResults').innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+  } finally {
+    setHfLoading(false);
+  }
+}
+
+$('hfResults').addEventListener('click', (event) => {
+  const card = event.target.closest('.image-card');
+  if (card) loadModelFiles(hfItems[Number(card.dataset.index)]?.id);
+});
+
+async function loadModelFiles(repo) {
+  if (!repo) return;
+  setHfLoading(true);
+  try {
+    const response = await fetch(`/api/hf/files?repo=${encodeURIComponent(repo)}&revision=main`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '获取模型文件失败');
+    const files = data.files || [];
+    $('hfFiles').innerHTML = `<div class="card glass compact"><div class="card-title">${esc(repo)}</div><div class="card-desc">main 分支 · ${files.length} 个文件</div></div><div class="file-list">${files.map((file) => {
+      const filename = file.name.split('/').pop() || 'download';
+      const downloadUrl = `${file.url}${file.url.includes('?') ? '&' : '?'}__flarehub_download=1`;
+      return `<div class="file-item"><div><strong>${esc(file.name)}</strong><span>${formatBytes(file.size)}</span></div><div class="inline-actions"><button class="btn btn-ghost btn-sm copy-hf-link" data-url="${esc(downloadUrl)}" type="button">复制链接</button><a class="btn btn-primary btn-sm" href="${esc(downloadUrl)}" download="${esc(filename)}">下载</a></div></div>`;
+    }).join('') || '<div class="empty">该仓库暂无文件</div>'}</div>`;
+    $('hfResults').classList.add('hidden');
+    $('backToModels').classList.remove('hidden');
+    window.scrollTo(0, 0);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setHfLoading(false);
+  }
+}
+
+$('hfFiles').addEventListener('click', (event) => {
+  const button = event.target.closest('.copy-hf-link');
+  if (button) copy(new URL(button.dataset.url, location.origin).href);
+});
+
+function formatBytes(value) {
+  const size = Number(value || 0);
+  if (!size) return '大小未知';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(Math.floor(Math.log(size) / Math.log(1024)), units.length - 1);
+  return `${(size / (1024 ** index)).toFixed(index ? 1 : 0)} ${units[index]}`;
+}
+
+function setHfLoading(loading) {
+  $('hfLoading').classList.toggle('hidden', !loading);
+}
+
+function initialize() {
+  const initialView = location.hash.slice(1);
+  if (initialView === 'search' || initialView === 'models') switchView(initialView);
+  formatGithubLink();
+}
+
+initialize();

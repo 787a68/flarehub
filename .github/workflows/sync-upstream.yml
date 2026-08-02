@@ -1,0 +1,36 @@
+# Fork 用户需在 Actions 页面手动启用此工作流
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "6 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # 原仓库跳过，仅在 Fork 上运行
+    if: github.repository != '787a68/flarehub'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fast-forward from upstream
+        shell: bash
+        run: |
+          git remote add upstream https://github.com/787a68/flarehub.git
+          git fetch --no-tags upstream main
+          git merge --ff-only upstream/main
+          git push origin main

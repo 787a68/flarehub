@@ -5,93 +5,89 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="description" content="运行在 Cloudflare Workers 上的 GitHub、Docker 与 Hugging Face 边缘代理">
 <meta name="color-scheme" content="dark light">
-<title>FlareHub · 开源资源加速</title>
-<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=3">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<title>FlareHub · GitHub、Docker 与 Hugging Face 加速</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 <div class="aurora"></div>
 <nav class="navbar">
   <div class="nav-inner">
-    <a href="/" class="logo"><span class="logo-mark" aria-hidden="true">F</span><span>FlareHub</span></a>
-    <div class="nav-tabs" role="tablist" aria-label="功能导航">
-      <button class="nav-tab active" data-view="accelerator" role="tab">资源加速</button>
-      <button class="nav-tab" data-view="search" role="tab">镜像搜索</button>
-      <button class="nav-tab" data-view="hf" role="tab">模型搜索</button>
+    <a href="/" class="logo"><span class="logo-mark">F</span><span>FlareHub</span></a>
+    <div class="nav-tabs">
+      <button class="nav-tab active" data-view="github">GitHub 加速</button>
+      <button class="nav-tab" data-view="search">镜像搜索</button>
+      <button class="nav-tab" data-view="models">模型搜索</button>
     </div>
   </div>
 </nav>
 <main class="main">
-  <section class="view active" id="view-accelerator">
+  <section class="view active" id="view-github">
     <div class="hero">
-      <h1 class="hero-title">开源资源加速</h1>
-      <p class="hero-sub">通过 Cloudflare 边缘网络流式传输 GitHub、Docker 与 Hugging Face 资源。</p>
+      <h1 class="hero-title">GitHub、Docker 与 Hugging Face 加速</h1>
+      <p class="hero-sub">在资源地址前添加本站域名，通过 Cloudflare 边缘网络流式传输。</p>
     </div>
     <div class="card glass">
       <div class="card-title">快速转换加速链接</div>
-      <div class="card-desc">点击按钮可读取剪贴板并立即转换；也可手动输入支持的 HTTPS 地址后按回车。</div>
-      <form class="form-group" id="proxyForm" novalidate>
-        <div class="field quick-field">
-          <input type="url" class="input" id="githubLinkInput" placeholder="粘贴或输入资源链接" aria-label="上游资源地址" autocomplete="url">
-          <button class="btn btn-primary" id="pasteConvertButton" type="button">粘贴并转换</button>
+      <div class="card-desc">支持 GitHub、Docker 官方下载及 Hugging Face HTTPS 资源地址。</div>
+      <div class="form-group">
+        <div class="field">
+          <input type="text" class="input" id="githubLinkInput" value="https://github.com/787a68/flarehub/archive/refs/heads/main.zip" aria-label="上游资源地址">
+          <button class="btn btn-primary" id="formatButton">获取加速链接</button>
         </div>
-      </form>
-      <div class="output hidden" id="githubOutput">
+      </div>
+      <div class="output" id="githubOutput">
         <div class="output-box" id="githubFormattedLink"></div>
         <div class="output-actions">
-          <button class="btn btn-ghost btn-sm" id="copyButton" type="button">复制链接</button>
-          <button class="btn btn-ghost btn-sm" id="openButton" type="button">打开链接</button>
+          <button class="btn btn-ghost btn-sm" id="copyButton">复制链接</button>
+          <button class="btn btn-ghost btn-sm" id="openButton">打开链接</button>
         </div>
       </div>
     </div>
     <div class="card glass">
-      <div class="card-title">仓库访问策略</div>
-      <div class="card-desc">前端会按服务端配置预校验；服务端仍执行最终校验。</div>
-      <div id="policyContent" class="policy-grid"><div class="empty compact">正在读取配置…</div></div>
-    </div>
-    <div class="card glass">
       <div class="card-title">使用说明</div>
-      <div class="card-desc">下载链接格式为“本站域名/上游主机/资源路径”，不保留上游地址的 https:// 前缀；容器镜像在镜像名称前加上本站域名。</div>
+      <div class="card-desc">直接使用“本站域名/上游主机/资源路径”。完整 HTTPS 地址也可放在本站域名之后。</div>
       <div id="usageExamples"></div>
     </div>
   </section>
-
   <section class="view" id="view-search">
     <div class="hero">
-      <h1 class="hero-title">镜像搜索与下载</h1>
-      <p class="hero-sub">搜索 Docker Hub 公开镜像，按标签和架构下载 OCI 归档。</p>
+      <h1 class="hero-title">镜像搜索</h1>
+      <p class="hero-sub">搜索 Docker Hub 公开镜像并查看可用标签。</p>
     </div>
     <div class="card glass">
-      <form class="field" id="dockerSearchForm" novalidate>
-        <input type="search" class="input" id="searchInput" placeholder="输入镜像名称搜索…">
-        <button class="btn btn-primary" type="submit">搜索镜像</button>
-      </form>
+      <div class="field">
+        <input type="text" class="input" id="searchInput" placeholder="输入镜像名称搜索...">
+        <button class="btn btn-primary" id="searchButton">搜索</button>
+      </div>
     </div>
-    <div id="searchLoading" class="loading-center hidden"><div class="spinner-lg"></div><p>正在加载…</p></div>
-    <button class="back-link hidden" id="backToSearch" type="button">← 返回搜索结果</button>
+    <div id="searchLoading" class="loading-center hidden"><div class="spinner-lg"></div><p>正在加载...</p></div>
+    <button class="back-link hidden" id="backToSearch">← 返回搜索结果</button>
     <div id="searchResults"></div>
     <div id="tagList"></div>
   </section>
-
-  <section class="view" id="view-hf">
+  <section class="view" id="view-models">
     <div class="hero">
-      <h1 class="hero-title">Hugging Face 模型搜索</h1>
-      <p class="hero-sub">搜索公开模型、浏览仓库文件并生成本站加速下载链接。</p>
+      <h1 class="hero-title">模型搜索与下载</h1>
+      <p class="hero-sub">搜索 Hugging Face 公开模型，浏览仓库文件并通过本站下载。</p>
     </div>
     <div class="card glass">
-      <form class="field" id="hfSearchForm" novalidate>
-        <input type="search" class="input" id="hfSearchInput" placeholder="例如：Qwen、BERT、Stable Diffusion">
-        <button class="btn btn-primary" type="submit">搜索模型</button>
-      </form>
+      <div class="field">
+        <input type="text" class="input" id="hfSearchInput" placeholder="输入模型名称搜索...">
+        <button class="btn btn-primary" id="hfSearchButton" type="button">搜索</button>
+      </div>
     </div>
-    <div id="hfLoading" class="loading-center hidden"><div class="spinner-lg"></div><p>正在加载…</p></div>
-    <button class="back-link hidden" id="backToModels" type="button">← 返回模型结果</button>
+    <div id="hfLoading" class="loading-center hidden"><div class="spinner-lg"></div><p>正在加载...</p></div>
+    <button class="back-link hidden" id="backToModels" type="button">← 返回模型搜索</button>
     <div id="hfResults"></div>
     <div id="hfFiles"></div>
   </section>
 </main>
 <div class="toast" id="toast"></div>
-<footer class="footer"><a href="https://github.com/787a68/flarehub" target="_blank" rel="noopener">GitHub · FlareHub</a></footer>
+<footer class="footer">
+  <a href="https://github.com/787a68/flarehub" target="_blank" rel="noopener">GitHub · FlareHub</a>
+</footer>
+<script src="/config.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -70,7 +70,11 @@ export async function proxyGithub(request, env = {}) {
   if (request.method === "OPTIONS") return preflight("GET, HEAD, OPTIONS");
   if (!METHODS.has(request.method)) throw new HttpError(405, "资源代理仅支持 GET 和 HEAD");
 
-  let target = parseGithubTarget(githubTargetFromRequest(new URL(request.url)));
+  const requestUrl = new URL(request.url);
+  const forceDownload = requestUrl.searchParams.get("__flarehub_download") === "1";
+  requestUrl.searchParams.delete("__flarehub_download");
+  let target = parseGithubTarget(githubTargetFromRequest(requestUrl));
+  const downloadFilename = target.pathname.split("/").filter(Boolean).at(-1) || "download";
   enforceAccess(githubRepository(target), env, "上游资源");
   const headers = upstreamHeaders(request.headers);
   headers.delete("cookie");
@@ -98,6 +102,11 @@ export async function proxyGithub(request, env = {}) {
   if (request.headers.has("authorization")) {
     result.headers.set("cache-control", "private, no-store");
     result.headers.append("vary", "authorization");
+  }
+  if (forceDownload) {
+    const fallback = downloadFilename.replace(/["\\\r\n]/g, "_");
+    result.headers.set("content-disposition", `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(downloadFilename)}`);
+    result.headers.set("x-content-type-options", "nosniff");
   }
   return result;
 }

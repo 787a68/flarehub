@@ -12,13 +12,15 @@ export async function searchImages(request, env) {
   target.searchParams.set("query", query);
   target.searchParams.set("page", String(page));
   target.searchParams.set("page_size", String(pageSize));
-  const response = await fetchUpstream(target, { headers: { accept: "application/json", "user-agent": "FlareHub/0.1" } });
-  if (!env.WHITELIST && !env.BLACKLIST) return downstreamResponse(response, { cors: true });
+  const response = await fetchUpstream(target, {
+    headers: { accept: "application/json", "user-agent": "FlareHub/0.1" },
+    cf: { cacheEverything: true, cacheTtl: 300, cacheTtlByStatus: { "200-299": 300, "400-499": 0, "500-599": 0 } },
+  });
   if (!response.ok) return downstreamResponse(response, { cors: true });
   const data = await response.json();
   data.results = (data.results || []).filter((item) => accessAllowed(item.repo_name || item.name || "", env));
   const headers = new Headers(response.headers);
-  headers.set("cache-control", "no-store");
+  headers.set("cache-control", "public, max-age=60");
   addCors(headers);
   return new Response(JSON.stringify(data), { status: response.status, headers });
 }
@@ -37,6 +39,9 @@ export async function listTags(request, env = {}) {
   target.searchParams.set("page", String(page));
   target.searchParams.set("page_size", String(pageSize));
   target.searchParams.set("ordering", "last_updated");
-  const response = await fetchUpstream(target, { headers: { accept: "application/json", "user-agent": "FlareHub/0.1" } });
+  const response = await fetchUpstream(target, {
+    headers: { accept: "application/json", "user-agent": "FlareHub/0.1" },
+    cf: { cacheEverything: true, cacheTtl: 300, cacheTtlByStatus: { "200-299": 300, "400-499": 0, "500-599": 0 } },
+  });
   return downstreamResponse(response, { cors: true });
 }

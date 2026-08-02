@@ -8,7 +8,7 @@ const INDEX_ACCEPT = [
   "application/vnd.docker.distribution.manifest.v2+json",
 ].join(", ");
 
-function normalizeImage(value, env = {}) {
+function normalizeImage(value) {
   let image = String(value || "").trim().replace(/^docker\.io\//, "");
   if (!image || image.includes("@") || !/^[a-z0-9._/-]+(?::[\w.-]+)?$/i.test(image)) throw new HttpError(400, "无效的 Docker Hub 镜像");
   let tag = "latest";
@@ -19,7 +19,6 @@ function normalizeImage(value, env = {}) {
     image = image.slice(0, colon);
   }
   const repository = image.includes("/") ? image : `library/${image}`;
-  enforceAccess(repository, env, "镜像");
   return { image, repository, tag };
 }
 
@@ -126,7 +125,8 @@ async function sha256(bytes) {
 export async function downloadDockerImage(request, env = {}) {
   if (request.method !== "GET" && request.method !== "HEAD") throw new HttpError(405, "仅支持 GET/HEAD");
   const input = new URL(request.url);
-  const image = normalizeImage(input.searchParams.get("image"), env);
+  const image = normalizeImage(input.searchParams.get("image"));
+  enforceAccess(image.repository, env, "Docker 镜像");
   const platform = (input.searchParams.get("platform") || "linux/amd64").trim();
   if (!/^[\w.-]+\/[\w.-]+(?:\/[\w.-]+)?$/.test(platform)) throw new HttpError(400, "无效的架构格式");
 

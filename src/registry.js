@@ -93,7 +93,6 @@ export async function proxyRegistryToken(request, env) {
     const match = scope.match(/^repository:([^:]+):/i);
     if (match) enforceAccess(match[1], env, "Docker 镜像");
   }
-
   const config = registryConfig();
   const registryName = (incoming.searchParams.get("registry") || "docker.io").toLowerCase();
   const registry = config[registryName];

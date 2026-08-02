@@ -1,10 +1,9 @@
-import { enforceAccess } from "./access.js";
+import { accessAllowed, enforceAccess } from "./access.js";
 import { clampInt, fetchUpstream, HttpError, json, preflight } from "./http.js";
 
-function safeRepoId(value, env = {}) {
+function safeRepoId(value) {
   const repo = String(value || "").trim();
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new HttpError(400, "模型仓库格式应为 owner/name");
-  enforceAccess(repo, env, "Hugging Face 仓库");
   return repo;
 }
 
@@ -36,22 +35,17 @@ export async function searchHuggingFace(request, env = {}) {
   if (!response.ok) throw new HttpError(response.status, "Hugging Face 搜索失败");
 
   const models = await response.json();
-  const results = [];
-  for (const model of Array.isArray(models) ? models : []) {
-    const id = model.id || model.modelId;
-    try {
-      safeRepoId(id, env);
-      if (!model.private) results.push(modelSummary(model));
-    } catch (error) {
-      if (!(error instanceof HttpError) || error.status !== 403) throw error;
-    }
-  }
+  const results = (Array.isArray(models) ? models : [])
+    .filter((model) => !model.private && /^[\w.-]+\/[\w.-]+$/.test(model.id || model.modelId || ""))
+    .filter((model) => accessAllowed(model.id || model.modelId || "", env))
+    .map(modelSummary);
   return json({ results, count: results.length });
 }
 
 export async function huggingFaceFiles(request, env = {}) {
   const input = new URL(request.url);
-  const repo = safeRepoId(input.searchParams.get("repo"), env);
+  const repo = safeRepoId(input.searchParams.get("repo"));
+  enforceAccess(repo, env, "Hugging Face 仓库");
   const revision = (input.searchParams.get("revision") || "main").trim();
   if (!/^[\w./-]+$/.test(revision) || revision.includes("..")) throw new HttpError(400, "无效的模型版本");
 

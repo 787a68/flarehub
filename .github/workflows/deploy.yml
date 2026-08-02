@@ -54,6 +54,7 @@ jobs:
           DEPLOY_FRONTEND: ${{ vars.DEPLOY_FRONTEND }}
           WHITELIST: ${{ vars.WHITELIST }}
           BLACKLIST: ${{ vars.BLACKLIST }}
+          CASE_INSENSITIVE: ${{ vars.CASE_INSENSITIVE }}
           RATE_LIMITER: ${{ vars.RATE_LIMITER }}
         run: node scripts/prepare-deploy.mjs
 
