@@ -1,215 +1,185 @@
-// GitHub / HuggingFace / Docker Binary proxy — patterned after hubproxy
-import { HttpError } from './http.js';
+/**
+ * GitHub, Hugging Face, and Docker binary download proxy.
+ *
+ * Handles proxying for:
+ * - GitHub: releases, archives, codeload, raw, gist, API, static assets
+ * - Hugging Face: resolve, blob, raw, CDN LFS
+ * - Docker binary: download.docker.com
+ */
 
-// ── URL matching patterns (mirrors hubproxy's githubExps) ──────────────────
-const PATTERNS = [
-  // blob → raw conversion: github.com/{owner}/{repo}/blob/{ref}/{path}
-  { re: /^\/?(?:https?:\/\/)?github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/, raw: true },
-  // GitHub pages: github.com/{owner}/{repo}/(releases|archive|tree|...)
-  { re: /^\/?(?:https?:\/\/)?github\.com\/([^/]+)\/([^/]+)\/(releases|archive|raw|tree|commits|issues|pulls|actions|milestones|discussions|wiki|projects|security|branches|tags|compare|labels)(\/.*)?$/, raw: false },
-  // GitHub repo root: github.com/{owner}/{repo}
-  { re: /^\/?(?:https?:\/\/)?github\.com\/([^/]+)\/([^/]+)$/, raw: false },
-  // GitHub raw: raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}
-  { re: /^\/?(?:https?:\/\/)?raw\.github(?:usercontent)?\.com\/.*$/, raw: false },
-  // GitHub API: api.github.com/...
-  { re: /^\/?(?:https?:\/\/)?api\.github\.com\/.*$/, raw: false },
-  // GitHub codeload: codeload.github.com/{owner}/{repo}/(legacy.)?(zip|tar.gz)/{ref}
-  { re: /^\/?(?:https?:\/\/)?codeload\.github\.com\/.*$/, raw: false },
-  // GitHub assets: github.githubassets.com/...
-  { re: /^\/?(?:https?:\/\/)?github\.githubassets\.com\/.*$/, raw: false },
-  // GitHub gists: gist.github(usercontent)?.com/...
-  { re: /^\/?(?:https?:\/\/)?gist\.github(?:usercontent)?\.com\/.*$/, raw: false },
-  // HuggingFace resolve: huggingface.co/{user}/{repo}/resolve/{ref}/{path}
-  { re: /^\/?(?:https?:\/\/)?huggingface\.co\/([^/]+)\/([^/]+)\/(?:resolve|raw|blob)\/(.+)$/, raw: false },
-  // HuggingFace CDN LFS
-  { re: /^\/?(?:https?:\/\/)?cdn-lfs(?:-us-1)?\.hf\.co\/.*$/, raw: false },
-  // Docker binary download
-  { re: /^\/?(?:https?:\/\/)?download\.docker\.com\/.*$/, raw: false },
-];
+import { corsPreflight, errorResponse, redirectResponse, sanitizeHeaders, sanitizeRequestHeaders, cacheHeaders, withCors } from './http.js';
+import { checkAccess } from './access.js';
 
-// Content-type values that should NOT be downloaded as files
-const BLOCKED_CONTENT_TYPES = [
-  'text/html', 'application/json', 'text/javascript', 'application/xml', 'text/css',
-];
+/** Upstream host → upstream base URL mapping. */
+const HOSTS = {
+  // GitHub
+  'github.com': 'https://github.com',
+  'raw.githubusercontent.com': 'https://raw.githubusercontent.com',
+  'api.github.com': 'https://api.github.com',
+  'codeload.github.com': 'https://codeload.github.com',
+  'github.githubassets.com': 'https://github.githubassets.com',
+  'gist.github.com': 'https://gist.github.com',
+  'gist.githubusercontent.com': 'https://gist.githubusercontent.com',
+  // Hugging Face
+  'huggingface.co': 'https://huggingface.co',
+  'cdn-lfs.hf.co': 'https://cdn-lfs.hf.co',
+  'cdn-lfs-us-1.hf.co': 'https://cdn-lfs-us-1.hf.co',
+  // Docker binary
+  'download.docker.com': 'https://download.docker.com',
+};
 
-// OpenSearch / Atom feeds that often redirect to gh-pages — proxy as-is
-const FEED_PATHS = /\.(atom|xml)$/i;
+/** Hosts that serve HTML pages (not proxied as-is). */
+const HTML_HOSTS = new Set(['github.com', 'huggingface.co', 'gist.github.com']);
+
+/** GitHub blob path pattern: /owner/repo/blob/branch/path → raw. */
+const BLOB_RE = /^\/([^/]+)\/([^/]+)\/blob\/(.+)$/;
 
 /**
- * Check if the given path matches any prowable GitHub/HF/Docker domain.
+ * Extract owner/repo from a GitHub-style path for access control.
+ * Returns null if the path doesn't match the expected pattern.
  */
-export function isGithubTarget(path) {
-  if (!path) return false;
-  return PATTERNS.some(p => p.re.test(path));
+function extractOwnerRepo(pathname) {
+  const m = pathname.match(/^\/([^/]+)\/([^/]+)\//);
+  return m ? `${m[1]}/${m[2]}` : null;
 }
 
 /**
- * Determine the upstream URL for a request path.
- * Returns { url, raw } — raw=true means rewrite blob→raw before fetch.
+ * Rewrite a GitHub blob URL to its raw equivalent.
+ * /owner/repo/blob/branch/file → /owner/repo/raw/branch/file
  */
-export function githubTargetFromRequest(path) {
-  if (!path) return null;
-  const decoded = decodeURIComponent(path.replace(/^\/+/, ''));
-  const upstream = decoded.startsWith('https://') ? decoded : `https://${decoded}`;
-  const upstreamPath = upstream.replace(/^https?:\/\/[^/]+/, '');
+function rewriteBlob(pathname) {
+  return pathname.replace(BLOB_RE, '/$1/$2/raw/$3');
+}
 
-  for (const { re, raw } of PATTERNS) {
-    const m = re.exec(decoded);
-    if (!m) continue;
-
-    // blob → raw rewrite
-    if (raw && m[1] && m[2] && m[3] && m[4]) {
-      return {
-        url: `https://raw.githubusercontent.com/${m[1]}/${m[2]}/${m[3]}/${m[4]}`,
-        raw: true,
-      };
+/**
+ * Parse the incoming request to determine the upstream target.
+ *
+ * Supports two URL formats:
+ * 1. /host/path  →  https://host/path
+ * 2. /https://host/path  →  https://host/path
+ *
+ * @returns {{ host: string, url: URL, isHtml: boolean } | null}
+ */
+function parseTarget(pathname) {
+  // Format 2: full URL embedded in path
+  if (pathname.startsWith('/https://')) {
+    try {
+      const url = new URL(pathname.slice(1));
+      return { host: url.hostname, url, isHtml: false };
+    } catch {
+      return null;
     }
-
-    return { url: upstream, raw: false };
   }
 
-  return null;
+  // Format 1: /host/path
+  const stripped = pathname.slice(1); // remove leading /
+  const slashIdx = stripped.indexOf('/');
+  if (slashIdx === -1) return null;
+
+  const host = stripped.slice(0, slashIdx);
+  const rest = stripped.slice(slashIdx);
+  const base = HOSTS[host];
+  if (!base) return null;
+
+  return { host, url: new URL(rest, base), isHtml: HTML_HOSTS.has(host) };
 }
 
 /**
- * Parse a GitHub URL into owner/repo/target parts.
- * Useful for UI display and access control.
+ * Main proxy handler for GitHub / HF / Docker binary.
+ *
+ * @param {Request} request
+ * @param {object} env - Worker environment
+ * @param {boolean} isHtml - Whether the target host serves HTML pages
+ * @returns {Promise<Response>}
  */
-export function parseGithubTarget(path) {
-  if (!path) return null;
-  const decoded = decodeURIComponent(path.replace(/^\/+/, ''));
-  const urlStr = decoded.startsWith('https://') ? decoded : `https://${decoded}`;
-
-  let info = null;
-
-  // Try to extract from raw.githubusercontent.com
-  const rawMatch = urlStr.match(/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.*)$/);
-  if (rawMatch) {
-    return {
-      host: 'raw.githubusercontent.com',
-      owner: rawMatch[1], repo: rawMatch[2], ref: rawMatch[3], path: rawMatch[4],
-    };
-  }
-
-  // Try hugingface.co
-  const hfMatch = urlStr.match(/huggingface\.co\/([^/]+)\/([^/]+)\/(?:resolve|raw|blob)\/(.*)$/);
-  if (hfMatch) {
-    return { host: 'huggingface.co', owner: hfMatch[1], repo: hfMatch[2], ref: hfMatch[2], path: hfMatch[3] };
-  }
-
-  // Try github.com
-  const ghMatch = urlStr.match(/github\.com\/([^/]+)\/([^/]+)(?:\/(.*))?$/);
-  if (ghMatch) {
-    return { host: 'github.com', owner: ghMatch[1], repo: ghMatch[2], path: ghMatch[3] || '' };
-  }
-
-  return null;
-}
-
-/**
- * Extract repository identity for access control / logging.
- */
-export function githubRepository(parsed) {
-  if (!parsed) return null;
-  if (parsed.owner && parsed.repo) return `${parsed.owner}/${parsed.repo}`;
-  return null;
-}
-
-/**
- * Determine whether a fetch response should be blocked (e.g. HTML page served as binary).
- * Mirrors hubproxy's blockedContentType check.
- */
-function shouldBlockResponse(resp, url) {
-  const ct = (resp.headers.get('content-type') || '').toLowerCase();
-  if (!ct) return false;
-
-  // Block HTML/json responses for raw/file endpoints
-  if (BLOCKED_CONTENT_TYPES.some(t => ct.startsWith(t))) {
-    // Allow GitHub.com HTML pages, HuggingFace repo pages, etc.
-    const isPageEndpoint = /^https?:\/\/(github\.com|huggingface\.co)\/[^/]+\/[^/]+(?:\/(?:releases|tree|commits|issues|pulls|actions|discussions|wiki|branches|tags|compare|milestones|projects|security|labels))?\/?$/i.test(url);
-    if (!isPageEndpoint) {
-      return true;
-    }
-    // Feed paths — allow
-    if (FEED_PATHS.test(url)) return false;
-  }
-
-  return false;
-}
-
-/**
- * Forward a request to the upstream and return a Response.
- * Closely mirrors hubproxy's forwardRequest + blockedContentType logic.
- */
-export async function proxyGithub(request, env, ctx) {
+export async function proxyGithub(request, env) {
   const url = new URL(request.url);
-  const path = url.pathname + url.search;
 
-  const target = githubTargetFromRequest(path);
-  if (!target) throw new HttpError('Invalid proxy target', 400);
+  // OPTIONS preflight
+  if (request.method === 'OPTIONS') {
+    return corsPreflight();
+  }
 
-  let upstreamUrl = target.url;
+  // Only allow safe methods
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return errorResponse(405, 'Method not allowed');
+  }
 
-  // Ensure upstream has the search part
-  if (url.search && !upstreamUrl.includes('?')) {
-    upstreamUrl += url.search;
+  const target = parseTarget(url.pathname);
+  if (!target) {
+    return errorResponse(404, 'Unknown upstream host');
+  }
+
+  // Block HTML page proxying (we only proxy files, archives, API)
+  if (target.isHtml) {
+    const path = target.url.pathname;
+    // Allow specific non-HTML paths on github.com / huggingface.co
+    const isFile =
+      path.includes('/releases/download/') ||
+      path.includes('/archive/') ||
+      path.includes('/blob/') ||
+      path.includes('/resolve/') ||
+      /\.(zip|tar\.gz|tgz|tar|gz|bz2|7z|whl|egg|jar|deb|rpm|msi|exe|dmg|pkg|apk|crate|gem|iso|dat|bin)$/i.test(path);
+
+    if (!isFile && !path.startsWith('/api.') && target.host !== 'api.github.com') {
+      // For github.com paths that aren't files, try blob→raw rewrite
+      if (target.host === 'github.com' && BLOB_RE.test(path)) {
+        target.url = new URL(rewriteBlob(path), 'https://raw.githubusercontent.com');
+        target.isHtml = false;
+      } else {
+        return errorResponse(403, 'HTML pages are not proxied');
+      }
+    }
+  }
+
+  // Access control: check owner/repo for GitHub, path for others
+  const ownerRepo = extractOwnerRepo(target.url.pathname);
+  const accessTarget = ownerRepo || target.url.pathname;
+  const access = checkAccess(accessTarget, env);
+  if (!access.allowed) {
+    return errorResponse(403, `Access denied: ${access.reason}`);
   }
 
   // Build upstream request
-  const headers = new Headers(request.headers);
-  headers.delete('host');
-  headers.delete('cf-connecting-ip');
-  headers.delete('cf-ipcountry');
-  headers.delete('cf-ray');
-  headers.delete('cf-visitor');
-  headers.delete('x-forwarded-for');
-  headers.delete('x-forwarded-proto');
-  headers.set('host', new URL(upstreamUrl).host);
-
-  // Accept redirects (GitHub/HF often redirect for releases, downloads)
-  let upstreamReq = new Request(upstreamUrl, {
+  const upstreamUrl = target.url;
+  const upstreamReq = new Request(upstreamUrl, {
     method: request.method,
-    headers,
-    redirect: 'follow',
+    headers: sanitizeRequestHeaders(request.headers),
+    redirect: 'manual',
   });
 
-  // POST/PUT — forward body
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    upstreamReq = new Request(upstreamUrl, {
-      method: request.method,
-      headers,
-      redirect: 'follow',
-      body: request.body,
-      duplex: 'half',
-    });
+  // Fetch upstream
+  let upstreamRes;
+  try {
+    upstreamRes = await fetch(upstreamReq);
+  } catch (err) {
+    return errorResponse(502, `Upstream fetch failed: ${err.message}`);
   }
 
-  const upstreamResp = await fetch(upstreamReq);
-
-  // Block inappropriate content types
-  if (shouldBlockResponse(upstreamResp, upstreamUrl)) {
-    return new Response('Not Found (blocked content type)', {
-      status: 404,
-      headers: { 'content-type': 'text/plain; charset=utf-8' },
-    });
+  // Handle redirects: rewrite Location to point through the proxy
+  if (upstreamRes.status >= 300 && upstreamRes.status < 400) {
+    const location = upstreamRes.headers.get('location');
+    if (location) {
+      const absolute = new URL(location, upstreamUrl);
+      // Primary format: /host/path (without protocol)
+      const redirectPath = '/' + absolute.hostname + absolute.pathname + absolute.search + absolute.hash;
+      return redirectResponse(redirectPath, upstreamRes.status);
+    }
   }
 
-  // Build response with proper CORS
-  const respHeaders = new Headers();
-  const hopByHop = ['connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade'];
-  for (const [k, v] of upstreamResp.headers) {
-    if (hopByHop.includes(k.toLowerCase())) continue;
-    // Don't pass through security headers from upstream
-    if (k.toLowerCase().startsWith('content-security-policy')) continue;
-    respHeaders.set(k, v);
-  }
-  respHeaders.set('access-control-allow-origin', '*');
-  respHeaders.set('access-control-expose-headers', '*');
-  respHeaders.set('x-proxied-by', 'flarehub');
+  // Build response with sanitized + cache headers
+  const respHeaders = sanitizeHeaders(upstreamRes.headers);
+  const cache = cacheHeaders(upstreamUrl, upstreamRes.headers);
+  for (const [k, v] of cache) respHeaders.set(k, v);
+  withCors(respHeaders);
 
-  return new Response(upstreamResp.body, {
-    status: upstreamResp.status,
-    statusText: upstreamResp.statusText,
+  // Stream the body
+  const body = request.method === 'HEAD' ? null : upstreamRes.body;
+  return new Response(body, {
+    status: upstreamRes.status,
+    statusText: upstreamRes.statusText,
     headers: respHeaders,
   });
 }
+
+

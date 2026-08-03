@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "check": "node --check src/worker.js && node --check src/access.js && node --check src/github.js && node --check src/http.js && node --check src/image-download.js && node --check src/registry.js && node --check scripts/prepare-deploy.mjs && node --check public/app.js"
+    "check": "node --check src/worker.js && node --check src/access.js && node --check src/github.js && node --check src/http.js && node --check src/registry.js && node --check scripts/prepare-deploy.mjs && node --check public/app.js"
   },
   "devDependencies": {
     "wrangler": "^4.27.0"

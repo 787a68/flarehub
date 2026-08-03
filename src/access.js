@@ -1,22 +1,62 @@
-import { HttpError } from "./http.js";
+/**
+ * Access control: whitelist / blacklist keyword matching.
+ * Blacklist takes priority over whitelist.
+ */
 
-const splitKeywords = (value) => String(value || "")
-  .split(",")
-  .map((item) => item.trim())
-  .filter(Boolean);
-
-const caseInsensitive = (env) => /^(1|true|yes|on)$/i.test(String(env.CASE_INSENSITIVE || "").trim());
-
-export function accessAllowed(value, env = {}) {
-  const ignoreCase = caseInsensitive(env);
-  const normalize = (item) => ignoreCase ? item.toLowerCase() : item;
-  const target = normalize(String(value || ""));
-  const whitelist = splitKeywords(env.WHITELIST).map(normalize);
-  const blacklist = splitKeywords(env.BLACKLIST).map(normalize);
-  if (blacklist.some((keyword) => target.includes(keyword))) return false;
-  return whitelist.length === 0 || whitelist.some((keyword) => target.includes(keyword));
+/**
+ * Parse a comma-separated env string into a trimmed keyword array.
+ * Returns [] for empty / whitespace-only input.
+ */
+export function parseList(value) {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
 }
 
-export function enforceAccess(value, env = {}, label = "资源") {
-  if (!accessAllowed(value, env)) throw new HttpError(403, `${label}不符合访问规则`);
+/**
+ * Check if a target string contains any of the keywords.
+ * @param {string} target - The string to check (e.g. "owner/repo")
+ * @param {string[]} keywords - Keywords to match against
+ * @param {boolean} caseInsensitive - Whether to ignore case
+ * @returns {boolean} true if any keyword is a substring of target
+ */
+function matches(target, keywords, caseInsensitive) {
+  if (keywords.length === 0) return false;
+  const t = caseInsensitive ? target.toLowerCase() : target;
+  const ks = caseInsensitive ? keywords.map(k => k.toLowerCase()) : keywords;
+  return ks.some(k => t.includes(k));
+}
+
+/**
+ * Determine if a request should be allowed based on access rules.
+ *
+ * Logic:
+ * 1. If target matches blacklist → deny (blacklist wins)
+ * 2. If whitelist is empty → allow all (not blacklisted)
+ * 3. If whitelist is non-empty → allow only if target matches whitelist
+ *
+ * @param {string} target - Identifier to check (owner/repo, image name, etc.)
+ * @param {object} env - Environment with WHITELIST, BLACKLIST, CASE_INSENSITIVE
+ * @returns {{ allowed: boolean, reason: string }}
+ */
+export function checkAccess(target, env) {
+  const whitelist = parseList(env.WHITELIST);
+  const blacklist = parseList(env.BLACKLIST);
+  const ci = env.CASE_INSENSITIVE === true || env.CASE_INSENSITIVE === 'true';
+
+  if (matches(target, blacklist, ci)) {
+    return { allowed: false, reason: 'blocked by blacklist' };
+  }
+
+  if (whitelist.length === 0) {
+    return { allowed: true, reason: 'no whitelist' };
+  }
+
+  if (matches(target, whitelist, ci)) {
+    return { allowed: true, reason: 'matched whitelist' };
+  }
+
+  return { allowed: false, reason: 'not in whitelist' };
 }

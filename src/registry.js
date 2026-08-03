@@ -1,118 +1,240 @@
-import { enforceAccess } from "./access.js";
-import { addCors, cacheOptions, cleanHeaders, downstreamResponse, fetchUpstream, HttpError, preflight, upstreamHeaders } from "./http.js";
+/**
+ * Docker Registry v2 proxy.
+ *
+ * Supports:
+ * - Docker Hub (registry-1.docker.io)
+ * - GitHub Container Registry (ghcr.io)
+ * - Quay.io (quay.io)
+ * - Google Container Registry (gcr.io)
+ * - Kubernetes registry (registry.k8s.io)
+ *
+ * Handles auth token relay via /token endpoint and rewrites
+ * www-authenticate challenges to point through the proxy.
+ */
 
-const METHODS = new Set(["GET", "HEAD", "PUT", "POST", "PATCH", "DELETE"]);
+import { corsPreflight, errorResponse, sanitizeHeaders, sanitizeRequestHeaders, withCors } from './http.js';
+import { checkAccess } from './access.js';
 
-export function registryConfig() {
-  return {
-    "docker.io": { upstream: "registry-1.docker.io", authHost: "https://auth.docker.io/token" },
-    "registry-1.docker.io": { upstream: "registry-1.docker.io", authHost: "https://auth.docker.io/token" },
-    "ghcr.io": { upstream: "ghcr.io", authHost: "https://ghcr.io/token" },
-    "quay.io": { upstream: "quay.io", authHost: "https://quay.io/v2/auth" },
-    "gcr.io": { upstream: "gcr.io", authHost: "https://gcr.io/v2/token" },
-    "registry.k8s.io": { upstream: "registry.k8s.io", authHost: "https://registry.k8s.io/v2/token" },
-  };
-}
+/** Registry host → upstream base URL. */
+const REGISTRIES = {
+  'registry-1.docker.io': 'https://registry-1.docker.io',
+  'ghcr.io': 'https://ghcr.io',
+  'quay.io': 'https://quay.io',
+  'gcr.io': 'https://gcr.io',
+  'registry.k8s.io': 'https://registry.k8s.io',
+};
 
-export function parseRegistryRequest(url, config) {
-  const segments = url.pathname.replace(/^\/v2\/?/, "").split("/").filter(Boolean);
-  const namespace = (url.searchParams.get("ns") || "").toLowerCase();
-  let registry = config[namespace] ? namespace : "docker.io";
-  if (segments.length && config[segments[0].toLowerCase()]) registry = segments.shift().toLowerCase();
-  if (registry === "docker.io" || registry === "registry-1.docker.io") {
-    const marker = segments.findIndex((part) => ["manifests", "blobs", "tags", "referrers"].includes(part));
-    if (marker === 1) segments.unshift("library");
+/** Auth endpoints for each registry. */
+const AUTH_ENDPOINTS = {
+  'registry-1.docker.io': 'https://auth.docker.io',
+  'ghcr.io': 'https://ghcr.io',
+  'quay.io': 'https://quay.io',
+  'gcr.io': 'https://gcr.io',
+  'registry.k8s.io': 'https://registry.k8s.io',
+};
+
+/**
+ * Parse the incoming path to determine the target registry.
+ *
+ * Path formats:
+ * - /v2/...                    → Docker Hub (default)
+ * - /ghcr.io/v2/...            → GHCR
+ * - /quay.io/v2/...            → Quay
+ * - /registry.k8s.io/v2/...   → k8s registry
+ * - /token?...                 → Docker Hub auth
+ * - /ghcr.io/token?...         → GHCR auth
+ *
+ * @returns {{ host: string, upstream: URL, path: string } | null}
+ */
+function parseRegistryPath(pathname, search) {
+  // Auth token endpoint: /token or /<host>/token
+  if (pathname === '/token' || pathname.endsWith('/token')) {
+    const hostMatch = pathname.match(/^\/([^/]+)\/token$/);
+    const host = hostMatch ? hostMatch[1] : 'registry-1.docker.io';
+    const base = AUTH_ENDPOINTS[host] || AUTH_ENDPOINTS['registry-1.docker.io'];
+    return {
+      host,
+      upstream: new URL(`/token${search}`, base),
+      path: '/token',
+      isAuth: true,
+    };
   }
-  return { registry, upstreamPath: segments.join("/") };
+
+  // /v2/... → Docker Hub
+  if (pathname.startsWith('/v2/')) {
+    return {
+      host: 'registry-1.docker.io',
+      upstream: new URL(pathname + search, 'https://registry-1.docker.io'),
+      path: pathname,
+      isAuth: false,
+    };
+  }
+
+  // /<host>/v2/... → other registries
+  const m = pathname.match(/^\/([^/]+)\/(v2\/.*)$/);
+  if (m) {
+    const host = m[1];
+    const rest = m[2];
+    const base = REGISTRIES[host];
+    if (!base) return null;
+    return {
+      host,
+      upstream: new URL(`/${rest}${search}`, base),
+      path: `/${rest}`,
+      isAuth: false,
+    };
+  }
+
+  return null;
 }
 
-export function registryRepository(upstreamPath) {
-  const parts = upstreamPath.split("/").filter(Boolean);
-  const marker = parts.findIndex((part) => ["manifests", "blobs", "tags", "referrers"].includes(part));
-  return marker > 0 ? parts.slice(0, marker).join("/") : "";
+/**
+ * Extract the image name from a registry path for access control.
+ * /v2/library/nginx/manifests/latest → library/nginx
+ * /v2/myorg/myrepo/blobs/sha256:... → myorg/myrepo
+ */
+function extractImageName(path) {
+  // /v2/<name>/manifests/<reference>
+  // /v2/<name>/blobs/<digest>
+  // /v2/<name>/tags/list
+  const m = path.match(/^\/v2\/(.+?)\/(manifests|blobs|tags)/);
+  if (!m) return null;
+  return m[1];
 }
 
-export async function proxyRegistry(request, env = {}) {
-  if (request.method === "OPTIONS") return preflight("GET, HEAD, PUT, POST, PATCH, DELETE, OPTIONS");
-  if (!METHODS.has(request.method)) throw new HttpError(405, "不支持此请求方法");
-
-  const incoming = new URL(request.url);
-  const config = registryConfig();
-  const parsed = parseRegistryRequest(incoming, config);
-  enforceAccess(registryRepository(parsed.upstreamPath), env, "Docker 镜像");
-  const registry = config[parsed.registry];
-  const target = new URL(`https://${registry.upstream}/v2/${parsed.upstreamPath}`);
-  target.search = incoming.search;
-  target.searchParams.delete("ns");
-
-  const headers = upstreamHeaders(request.headers);
-  headers.delete("cookie");
-  headers.delete("origin");
-  headers.delete("referer");
-  headers.set("host", registry.upstream);
-  const response = await fetchUpstream(target, {
+/**
+ * Relay the auth token request to the upstream auth service.
+ */
+async function handleAuth(upstream, request) {
+  const req = new Request(upstream, {
     method: request.method,
+    headers: sanitizeRequestHeaders(request.headers),
+    redirect: 'manual',
+  });
+
+  let res;
+  try {
+    res = await fetch(req);
+  } catch (err) {
+    return errorResponse(502, `Auth relay failed: ${err.message}`);
+  }
+
+  const headers = sanitizeHeaders(res.headers);
+  withCors(headers);
+  return new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
     headers,
-    body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
-    redirect: "manual",
-    cf: cacheOptions(request, /\/blobs\//.test(target.pathname) ? 604800 : 300),
-  });
-  const responseHeaders = cleanHeaders(response.headers);
-  const authenticated = request.headers.has("authorization");
-  if (authenticated || response.status === 401) {
-    responseHeaders.set("cache-control", "private, no-store");
-    responseHeaders.append("vary", "authorization");
-  }
-  const challenge = responseHeaders.get("www-authenticate");
-  if (challenge) responseHeaders.set("www-authenticate", rewriteAuthChallenge(challenge, incoming, parsed.registry));
-  const location = responseHeaders.get("location");
-  if (location) {
-    const redirect = new URL(location, target);
-    if (redirect.protocol === "https:" && redirect.hostname === registry.upstream) {
-      responseHeaders.set("location", `${incoming.origin}/v2/${parsed.registry}/${redirect.pathname.replace(/^\/v2\//, "")}${redirect.search}`);
-    }
-  }
-  addCors(responseHeaders);
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders });
-}
-
-function rewriteAuthChallenge(challenge, incoming, registry) {
-  return challenge.replace(/realm="([^"]+)"/i, (_, realm) => {
-    const token = new URL("/token", incoming.origin);
-    token.searchParams.set("registry", registry);
-    token.searchParams.set("realm", realm);
-    return `realm="${token.href}"`;
   });
 }
 
-export async function proxyRegistryToken(request, env) {
-  if (request.method === "OPTIONS") return preflight("GET, HEAD, OPTIONS");
-  if (!new Set(["GET", "HEAD"]).has(request.method)) throw new HttpError(405, "令牌接口仅支持 GET 和 HEAD");
-  const incoming = new URL(request.url);
-  for (const scope of incoming.searchParams.getAll("scope")) {
-    const match = scope.match(/^repository:([^:]+):/i);
-    if (match) enforceAccess(match[1], env, "Docker 镜像");
+/**
+ * Main Docker Registry proxy handler.
+ *
+ * @param {Request} request
+ * @param {object} env
+ * @returns {Promise<Response>}
+ */
+export async function proxyRegistry(request, env) {
+  const url = new URL(request.url);
+
+  if (request.method === 'OPTIONS') {
+    return corsPreflight();
   }
-  const config = registryConfig();
-  const registryName = (incoming.searchParams.get("registry") || "docker.io").toLowerCase();
-  const registry = config[registryName];
-  if (!registry) throw new HttpError(400, "未知 Registry");
-  const configuredAuth = new URL(registry.authHost);
-  const suppliedRealm = incoming.searchParams.get("realm");
-  let target = configuredAuth;
-  if (suppliedRealm) {
-    const parsedRealm = new URL(suppliedRealm);
-    if (parsedRealm.protocol !== "https:" || !new Set([configuredAuth.hostname, registry.upstream]).has(parsedRealm.hostname)) {
-      throw new HttpError(400, "Registry 认证地址不受信任");
+
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return errorResponse(405, 'Method not allowed');
+  }
+
+  const target = parseRegistryPath(url.pathname, url.search);
+  if (!target) {
+    return errorResponse(404, 'Unknown registry path');
+  }
+
+  // Auth token relay
+  if (target.isAuth) {
+    return handleAuth(target.upstream, request);
+  }
+
+  // Access control: check image name
+  const imageName = extractImageName(target.path);
+  if (imageName) {
+    const access = checkAccess(imageName, env);
+    if (!access.allowed) {
+      return errorResponse(403, `Access denied: ${access.reason}`);
     }
-    target = parsedRealm;
   }
-  for (const [key, value] of incoming.searchParams) {
-    if (!new Set(["registry", "realm"]).has(key)) target.searchParams.append(key, value);
+
+  // Fetch upstream
+  const upstreamReq = new Request(target.upstream, {
+    method: request.method,
+    headers: sanitizeRequestHeaders(request.headers),
+    redirect: 'manual',
+  });
+
+  let upstreamRes;
+  try {
+    upstreamRes = await fetch(upstreamReq);
+  } catch (err) {
+    return errorResponse(502, `Registry fetch failed: ${err.message}`);
   }
-  const tokenHeaders = new Headers({ accept: "application/json", "user-agent": "FlareHub/0.1" });
-  const authorization = request.headers.get("authorization");
-  if (authorization) tokenHeaders.set("authorization", authorization);
-  const response = await fetchUpstream(target, { method: request.method, headers: tokenHeaders, redirect: "manual" });
-  return downstreamResponse(response, { cors: true, noStore: true });
+
+  // Handle 401: rewrite www-authenticate to point through proxy
+  if (upstreamRes.status === 401) {
+    const wwwAuth = upstreamRes.headers.get('www-authenticate');
+    if (wwwAuth) {
+      const rewritten = rewriteWwwAuthenticate(wwwAuth, target.host, url);
+      const headers = sanitizeHeaders(upstreamRes.headers);
+      headers.set('www-authenticate', rewritten);
+      withCors(headers);
+      return new Response(upstreamRes.body, {
+        status: 401,
+        statusText: upstreamRes.statusText,
+        headers,
+      });
+    }
+  }
+
+  // Build response
+  const headers = sanitizeHeaders(upstreamRes.headers);
+  withCors(headers);
+
+  // Cache blob layers (immutable content-addressed)
+  if (target.path.includes('/blobs/')) {
+    headers.set('cache-control', 'public, max-age=86400, immutable');
+    headers.set('cdn-cache', 'public, max-age=86400');
+  } else {
+    headers.set('cache-control', 'public, max-age=300');
+    headers.set('cdn-cache', 'public, max-age=300');
+  }
+
+  const body = request.method === 'HEAD' ? null : upstreamRes.body;
+  return new Response(body, {
+    status: upstreamRes.status,
+    statusText: upstreamRes.statusText,
+    headers,
+  });
 }
+
+/**
+ * Rewrite the www-authenticate header to point the client
+ * to the proxy's /token endpoint instead of the upstream auth.
+ *
+ * Example:
+ *   Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/nginx:pull"
+ * →
+ *   Bearer realm="https://your-domain.com/token",service="registry.docker.io",scope="repository:library/nginx:pull"
+ */
+function rewriteWwwAuthenticate(header, host, proxyUrl) {
+  // Build the proxy's token endpoint URL
+  const tokenPath = host === 'registry-1.docker.io' ? '/token' : `/${host}/token`;
+  const realm = `${proxyUrl.origin}${tokenPath}`;
+
+  // Replace the realm= value in the Bearer challenge
+  return header.replace(
+    /realm="[^"]*"/,
+    `realm="${realm}"`
+  );
+}
+
+
