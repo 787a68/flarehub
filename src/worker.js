@@ -6,7 +6,8 @@
  * - Docker Registry proxy (/v2, /token, /<host>/v2, /<host>/token)
  * - GitHub / HF / Docker binary proxy (everything else)
  *
- * Rate limiting is applied globally to ALL requests (including OPTIONS).
+ * Rate limiting is applied only to proxy requests (registry + github),
+ * not to static assets, to minimize subrequest overhead.
  */
 
 import { proxyGithub } from './github.js';
@@ -23,6 +24,7 @@ const KNOWN_HOSTS = new Set([
   'github.com', 'raw.githubusercontent.com', 'api.github.com',
   'codeload.github.com', 'github.githubassets.com',
   'gist.github.com', 'gist.githubusercontent.com',
+  'objects.githubusercontent.com', 'github-releases.githubusercontent.com',
   'huggingface.co', 'cdn-lfs.hf.co', 'cdn-lfs-us-1.hf.co',
   'download.docker.com',
   'registry-1.docker.io', 'ghcr.io', 'quay.io', 'gcr.io', 'registry.k8s.io',
@@ -30,29 +32,31 @@ const KNOWN_HOSTS = new Set([
 
 /**
  * Determine if a path is a registry proxy request.
- * /v2/..., /token, /<host>/v2/..., /<host>/token
+ * /v2, /v2/..., /token, /<host>/v2, /<host>/v2/..., /<host>/token
  */
 function isRegistryPath(pathname) {
-  if (pathname.startsWith('/v2/') || pathname === '/token') return true;
+  if (pathname === '/v2' || pathname.startsWith('/v2/') || pathname === '/token') return true;
   for (const host of REGISTRY_HOSTS) {
-    if (pathname.startsWith(`/${host}/v2/`) || pathname === `/${host}/token`) return true;
+    if (pathname === `/${host}/v2` || pathname.startsWith(`/${host}/v2/`) || pathname === `/${host}/token`) return true;
   }
   return false;
 }
 
 /**
  * Determine if a path is a proxy request (not static assets or API).
+ * Note: Registry paths are checked separately before this function.
  */
 function isProxyPath(pathname) {
-  if (isRegistryPath(pathname)) return true;
   const firstSeg = pathname.slice(1).split('/')[0];
   if (KNOWN_HOSTS.has(firstSeg)) return true;
+  // Cloudflare encodes : in /https:// to %3A in production
   if (pathname.startsWith('/https://')) return true;
+  if (pathname.startsWith('/https%3A/') || pathname.startsWith('/https%3a/')) return true;
   return false;
 }
 
 /**
- * Apply global rate limiting to all requests.
+ * Apply rate limiting to proxy requests only.
  * Returns null if allowed, or a 429 Response if limited.
  */
 async function checkRateLimit(request, env) {
@@ -75,14 +79,7 @@ export default {
     const url = new URL(request.url);
     const pathname = url.pathname;
 
-    // Log request URL for debugging (visible in wrangler tail / dashboard)
-    console.log(`${request.method} ${url.pathname}${url.search}`);
-
-    // Global rate limiting for ALL requests (including OPTIONS)
-    const limited = await checkRateLimit(request, env);
-    if (limited) return limited;
-
-    // OPTIONS preflight (after rate limiting)
+    // OPTIONS preflight (no rate limiting for static CORS)
     if (request.method === 'OPTIONS') {
       return corsPreflight();
     }
@@ -93,11 +90,17 @@ export default {
       return env.ASSETS.fetch(new Request(new URL('/', url.origin), request));
     }
 
-    // Proxy requests: registry or GitHub/HF/Docker
+    // Registry proxy: /v2, /token, /<host>/v2, /<host>/token
+    if (isRegistryPath(pathname)) {
+      const limited = await checkRateLimit(request, env);
+      if (limited) return limited;
+      return proxyRegistry(request, env);
+    }
+
+    // GitHub/HF/Docker binary proxy
     if (isProxyPath(pathname)) {
-      if (isRegistryPath(pathname)) {
-        return proxyRegistry(request, env);
-      }
+      const limited = await checkRateLimit(request, env);
+      if (limited) return limited;
       return proxyGithub(request, env);
     }
 

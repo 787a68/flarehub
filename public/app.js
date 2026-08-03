@@ -17,11 +17,12 @@
     'github.githubassets.com',
     'gist.github.com',
     'gist.githubusercontent.com',
+    'objects.githubusercontent.com',
+    'github-releases.githubusercontent.com',
     'huggingface.co',
     'cdn-lfs.hf.co',
     'cdn-lfs-us-1.hf.co',
     'download.docker.com',
-    'registry-1.docker.io',
     'ghcr.io',
     'quay.io',
     'gcr.io',
@@ -80,15 +81,36 @@
   }
 
   /**
-   * Copy text to clipboard.
+   * Copy text to clipboard with graceful fallback for non-secure contexts.
    */
   function copyText(text) {
-    if (navigator.clipboard) {
+    if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(text).then(function () {
         showToast('已复制');
       }).catch(function () {
-        showToast('复制失败');
+        fallbackCopy(text);
       });
+    } else {
+      fallbackCopy(text);
+    }
+  }
+
+  /**
+   * Fallback copy using a temporary textarea + execCommand.
+   */
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      showToast(ok ? '已复制' : '复制失败');
+    } catch (e) {
+      showToast('复制失败');
     }
   }
 
@@ -125,14 +147,16 @@
     // Paste and convert
     if (convertBtn) {
       convertBtn.addEventListener('click', function () {
-        if (navigator.clipboard) {
+        if (navigator.clipboard && window.isSecureContext) {
           navigator.clipboard.readText().then(function (text) {
             input.value = text;
             doConvert(text);
           }).catch(function () {
+            input.focus();
             doConvert();
           });
         } else {
+          input.focus();
           doConvert();
         }
       });

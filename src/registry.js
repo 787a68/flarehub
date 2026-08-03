@@ -12,7 +12,7 @@
  * www-authenticate challenges to point through the proxy.
  */
 
-import { corsPreflight, errorResponse, sanitizeHeaders, sanitizeRequestHeaders, withCors } from './http.js';
+import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, withCors } from './http.js';
 import { checkAccess } from './access.js';
 
 /** Registry host → upstream base URL. */
@@ -26,11 +26,11 @@ const REGISTRIES = {
 
 /** Auth endpoints for each registry. */
 const AUTH_ENDPOINTS = {
-  'registry-1.docker.io': 'https://auth.docker.io',
-  'ghcr.io': 'https://ghcr.io',
-  'quay.io': 'https://quay.io',
-  'gcr.io': 'https://gcr.io',
-  'registry.k8s.io': 'https://registry.k8s.io',
+  'registry-1.docker.io': { base: 'https://auth.docker.io', path: '/token' },
+  'ghcr.io': { base: 'https://ghcr.io', path: '/token' },
+  'quay.io': { base: 'https://quay.io', path: '/v2/auth' },
+  'gcr.io': { base: 'https://gcr.io', path: '/v2/auth' },
+  'registry.k8s.io': { base: 'https://registry.k8s.io', path: '/v2/auth' },
 };
 
 /**
@@ -51,17 +51,17 @@ function parseRegistryPath(pathname, search) {
   if (pathname === '/token' || pathname.endsWith('/token')) {
     const hostMatch = pathname.match(/^\/([^/]+)\/token$/);
     const host = hostMatch ? hostMatch[1] : 'registry-1.docker.io';
-    const base = AUTH_ENDPOINTS[host] || AUTH_ENDPOINTS['registry-1.docker.io'];
+    const ep = AUTH_ENDPOINTS[host] || AUTH_ENDPOINTS['registry-1.docker.io'];
     return {
       host,
-      upstream: new URL(`/token${search}`, base),
-      path: '/token',
+      upstream: new URL(`${ep.path}${search}`, ep.base),
+      path: ep.path,
       isAuth: true,
     };
   }
 
-  // /v2/... → Docker Hub
-  if (pathname.startsWith('/v2/')) {
+  // /v2 and /v2/... → Docker Hub
+  if (pathname === '/v2' || pathname === '/v2/' || pathname.startsWith('/v2/')) {
     return {
       host: 'registry-1.docker.io',
       upstream: new URL(pathname + search, 'https://registry-1.docker.io'),
@@ -120,6 +120,8 @@ async function handleAuth(upstream, request) {
   }
 
   const headers = sanitizeHeaders(res.headers);
+  headers.set('cache-control', 'no-store');
+  headers.set('cdn-cache', 'no-store');
   withCors(headers);
   return new Response(res.body, {
     status: res.status,
@@ -137,10 +139,6 @@ async function handleAuth(upstream, request) {
  */
 export async function proxyRegistry(request, env) {
   const url = new URL(request.url);
-
-  if (request.method === 'OPTIONS') {
-    return corsPreflight();
-  }
 
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return errorResponse(405, 'Method not allowed');
@@ -177,6 +175,28 @@ export async function proxyRegistry(request, env) {
     upstreamRes = await fetch(upstreamReq);
   } catch (err) {
     return errorResponse(502, `Registry fetch failed: ${err.message}`);
+  }
+
+  // Follow upstream redirects for registry requests.
+  // Some registries (k8s.io, Quay CDN) redirect manifests and blobs to
+  // regional backends or CDNs. Docker daemon does not follow external
+  // redirects, so we fetch and return the content ourselves.
+  let redirectCount = 0;
+  while (upstreamRes.status >= 300 && upstreamRes.status < 400 && redirectCount < 5) {
+    const location = upstreamRes.headers.get('location');
+    if (!location) break;
+    redirectCount++;
+    try {
+      const redirectUrl = new URL(location, target.upstream);
+      const redirectReq = new Request(redirectUrl, {
+        method: request.method,
+        headers: sanitizeRequestHeaders(request.headers),
+        redirect: 'manual',
+      });
+      upstreamRes = await fetch(redirectReq);
+    } catch (err) {
+      return errorResponse(502, `Registry redirect fetch failed: ${err.message}`);
+    }
   }
 
   // Handle 401: rewrite www-authenticate to point through proxy

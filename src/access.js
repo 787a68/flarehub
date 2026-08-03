@@ -24,9 +24,9 @@ export function parseList(value) {
  */
 function matches(target, keywords, caseInsensitive) {
   if (keywords.length === 0) return false;
-  const t = caseInsensitive ? target.toLowerCase() : target;
-  const ks = caseInsensitive ? keywords.map(k => k.toLowerCase()) : keywords;
-  return ks.some(k => t.includes(k));
+  if (!caseInsensitive) return keywords.some(k => target.includes(k));
+  const t = target.toLowerCase();
+  return keywords.some(k => t.includes(k.toLowerCase()));
 }
 
 /**

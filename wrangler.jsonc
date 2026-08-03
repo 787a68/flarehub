@@ -11,22 +11,24 @@
     "not_found_handling": "404-page",
     "run_worker_first": [
       "/v2", "/v2/*", "/token",
-      "/ghcr.io", "/ghcr.io/*",
-      "/quay.io", "/quay.io/*",
-      "/gcr.io", "/gcr.io/*",
-      "/registry.k8s.io", "/registry.k8s.io/*",
-      "/github.com", "/github.com/*",
-      "/raw.githubusercontent.com", "/raw.githubusercontent.com/*",
-      "/api.github.com", "/api.github.com/*",
-      "/codeload.github.com", "/codeload.github.com/*",
-      "/github.githubassets.com", "/github.githubassets.com/*",
-      "/gist.github.com", "/gist.github.com/*",
-      "/gist.githubusercontent.com", "/gist.githubusercontent.com/*",
-      "/huggingface.co", "/huggingface.co/*",
-      "/cdn-lfs.hf.co", "/cdn-lfs.hf.co/*",
-      "/cdn-lfs-us-1.hf.co", "/cdn-lfs-us-1.hf.co/*",
-      "/download.docker.com", "/download.docker.com/*",
-      "/https://"
+      "/ghcr.io/*",
+      "/quay.io/*",
+      "/gcr.io/*",
+      "/registry.k8s.io/*",
+      "/github.com/*",
+      "/raw.githubusercontent.com/*",
+      "/api.github.com/*",
+      "/codeload.github.com/*",
+      "/github.githubassets.com/*",
+      "/gist.github.com/*",
+      "/gist.githubusercontent.com/*",
+      "/objects.githubusercontent.com/*",
+      "/github-releases.githubusercontent.com/*",
+      "/huggingface.co/*",
+      "/cdn-lfs.hf.co/*",
+      "/cdn-lfs-us-1.hf.co/*",
+      "/download.docker.com/*",
+      "/https:///*", "/https%3A/*", "/https%3a/*"
     ]
   },
   "ratelimits": [
@@ -49,6 +51,6 @@
   },
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 1
+    "head_sampling_rate": 0.1
   }
 }

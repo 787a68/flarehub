@@ -7,7 +7,7 @@
  * - Docker binary: download.docker.com
  */
 
-import { corsPreflight, errorResponse, redirectResponse, sanitizeHeaders, sanitizeRequestHeaders, cacheHeaders, withCors } from './http.js';
+import { errorResponse, redirectResponse, sanitizeHeaders, sanitizeRequestHeaders, cacheHeaders, withCors, isStaticAsset } from './http.js';
 import { checkAccess } from './access.js';
 
 /** Upstream host → upstream base URL mapping. */
@@ -20,6 +20,8 @@ const HOSTS = {
   'github.githubassets.com': 'https://github.githubassets.com',
   'gist.github.com': 'https://gist.github.com',
   'gist.githubusercontent.com': 'https://gist.githubusercontent.com',
+  'objects.githubusercontent.com': 'https://objects.githubusercontent.com',
+  'github-releases.githubusercontent.com': 'https://github-releases.githubusercontent.com',
   // Hugging Face
   'huggingface.co': 'https://huggingface.co',
   'cdn-lfs.hf.co': 'https://cdn-lfs.hf.co',
@@ -55,17 +57,19 @@ function rewriteBlob(pathname) {
  * Parse the incoming request to determine the upstream target.
  *
  * Supports two URL formats:
- * 1. /host/path  →  https://host/path
- * 2. /https://host/path  →  https://host/path
+ * 1. /host/path?query  →  https://host/path?query
+ * 2. /https://host/path?query  →  https://host/path?query
  *
  * @returns {{ host: string, url: URL, isHtml: boolean } | null}
  */
-function parseTarget(pathname) {
+function parseTarget(pathname, search) {
   // Format 2: full URL embedded in path
-  if (pathname.startsWith('/https://')) {
+  // Cloudflare may encode : as %3A in production
+  if (pathname.startsWith('/https://') || pathname.startsWith('/https%3A/') || pathname.startsWith('/https%3a/')) {
     try {
-      const url = new URL(pathname.slice(1));
-      return { host: url.hostname, url, isHtml: false };
+      const raw = pathname.slice(1).replace(/^https%3[Aa]\//, 'https://') + search;
+      const url = new URL(raw);
+      return { host: url.hostname, url, isHtml: HTML_HOSTS.has(url.hostname) };
     } catch {
       return null;
     }
@@ -81,7 +85,7 @@ function parseTarget(pathname) {
   const base = HOSTS[host];
   if (!base) return null;
 
-  return { host, url: new URL(rest, base), isHtml: HTML_HOSTS.has(host) };
+  return { host, url: new URL(rest + search, base), isHtml: HTML_HOSTS.has(host) };
 }
 
 /**
@@ -95,17 +99,12 @@ function parseTarget(pathname) {
 export async function proxyGithub(request, env) {
   const url = new URL(request.url);
 
-  // OPTIONS preflight
-  if (request.method === 'OPTIONS') {
-    return corsPreflight();
-  }
-
   // Only allow safe methods
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return errorResponse(405, 'Method not allowed');
   }
 
-  const target = parseTarget(url.pathname);
+  const target = parseTarget(url.pathname, url.search);
   if (!target) {
     return errorResponse(404, 'Unknown upstream host');
   }
@@ -114,14 +113,7 @@ export async function proxyGithub(request, env) {
   if (target.isHtml) {
     const path = target.url.pathname;
     // Allow specific non-HTML paths on github.com / huggingface.co
-    const isFile =
-      path.includes('/releases/download/') ||
-      path.includes('/archive/') ||
-      path.includes('/blob/') ||
-      path.includes('/resolve/') ||
-      /\.(zip|tar\.gz|tgz|tar|gz|bz2|7z|whl|egg|jar|deb|rpm|msi|exe|dmg|pkg|apk|crate|gem|iso|dat|bin)$/i.test(path);
-
-    if (!isFile && !path.startsWith('/api.') && target.host !== 'api.github.com') {
+    if (!isStaticAsset(path) && !path.startsWith('/api.')) {
       // For github.com paths that aren't files, try blob→raw rewrite
       if (target.host === 'github.com' && BLOB_RE.test(path)) {
         target.url = new URL(rewriteBlob(path), 'https://raw.githubusercontent.com');

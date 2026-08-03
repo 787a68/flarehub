@@ -332,6 +332,13 @@ body{
 }
 .footer-glass a:hover{color:var(--accent)}
 
+/* ===== Reduced Motion ===== */
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .orb{animation:none}
+  .card-glass,.btn-glass,.example,.logo{transition:none}
+}
+
 /* ===== Utility ===== */
 .hidden{display:none!important}
 

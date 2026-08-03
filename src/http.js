@@ -24,6 +24,31 @@ const STRIP = new Set([
   'permissions-policy', 'referrer-policy',
 ]);
 
+/** CDN hosts that always serve immutable content-addressed data. */
+export const CDN_HOSTS = new Set([
+  'objects.githubusercontent.com',
+  'github-releases.githubusercontent.com',
+  'cdn-lfs.hf.co',
+  'cdn-lfs-us-1.hf.co',
+]);
+
+/** File extension pattern for static (immutable) content. Shared across modules. */
+export const FILE_EXT_RE = /\.(zip|tar\.gz|tgz|tar|gz|bz2|7z|iso|exe|msi|deb|rpm|dmg|pkg|jar|war|whl|egg|gem|crate|apk|dll|so|dylib|bin|img|dat|db|sqlite|woff2?|ttf|otf|eot|png|jpe?g|gif|webp|svg|ico|bmp|mp[34]|wav|flac|ogg|avi|mov|mkv|webm|pdf|epub|mobi|cbz|cbr)$/i;
+
+/**
+ * Check if a path points to static (immutable) content.
+ * Used for cache header generation. Note: /blob/ is intentionally excluded
+ * because blob paths on HTML hosts need rewriting to raw, not direct fetch.
+ */
+export function isStaticAsset(path) {
+  return path.includes('/releases/download/') ||
+    path.includes('/archive/') ||
+    path.includes('/codeload') ||
+    path.includes('/resolve/') ||
+    path.includes('/raw/') ||
+    FILE_EXT_RE.test(path);
+}
+
 /** CORS headers applied to all responses. */
 const CORS_HEADERS = {
   'access-control-allow-origin': '*',
@@ -104,27 +129,19 @@ export function cacheHeaders(url, existing) {
   // Preserve explicit no-store / no-cache from upstream
   if (/no-store|no-cache/i.test(cc)) {
     cache.set('cache-control', 'no-store');
+    cache.set('cdn-cache', 'no-store');
     return cache;
   }
 
-  // Long-lived static assets: releases, archives, blobs, codeload, CDN
-  const path = url.pathname;
-  if (
-    path.includes('/releases/download/') ||
-    path.includes('/archive/') ||
-    path.includes('/codeload') ||
-    path.includes('/resolve/') ||
-    path.includes('/blob/') ||
-    path.includes('/raw/') ||
-    /\.(zip|tar\.gz|tgz|tar|gz|bz2|7z|iso|exe|msi|deb|rpm|dmg|pkg|jar|war|whl|egg|gem|crate|apk|dll|so|dylib|bin|img|dat|db|sqlite|woff2?|ttf|otf|eot|png|jpe?g|gif|webp|svg|ico|bmp|mp[34]|wav|flac|ogg|avi|mov|mkv|webm|pdf|epub|mobi|cbz|cbr)$/i.test(path)
-  ) {
-    cache.set('cache-control', 'public, max-age=86400');
+  // Long-lived static assets: releases, archives, codeload, raw, CDN
+  if (isStaticAsset(url.pathname) || CDN_HOSTS.has(url.hostname)) {
+    cache.set('cache-control', 'public, max-age=86400, immutable');
     cache.set('cdn-cache', 'public, max-age=86400');
     return cache;
   }
 
   // Default: short edge cache, revalidate with origin
-  cache.set('cache-control', 'public, max-age=300, s-maxage=600');
+  cache.set('cache-control', 'public, max-age=300, s-maxage=300');
   cache.set('cdn-cache', 'public, max-age=300');
   return cache;
 }
