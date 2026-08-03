@@ -113,15 +113,23 @@ function getScopeForPath(path) {
 /**
  * Parse the incoming path to determine the target registry.
  *
- * Path formats:
- * - /v2/...                    → Docker Hub (default)
- * - /ghcr.io/v2/...            → GHCR
- * - /quay.io/v2/...            → Quay
- * - /registry.k8s.io/v2/...   → k8s registry
- * - /token?...                 → Docker Hub auth
- * - /ghcr.io/token?...         → GHCR auth
+ * When a user runs `docker pull <proxy>/ghcr.io/owner/repo:tag`, the Docker
+ * daemon treats the proxy host as the registry and `ghcr.io/owner/repo` as
+ * the image name, so it sends:
+ *   GET /v2/ghcr.io/owner/repo/manifests/tag
+ * We must detect the embedded registry host in the image name and route
+ * accordingly. Only when the image name does NOT start with a known
+ * registry host do we fall back to Docker Hub.
  *
- * @returns {{ host: string, upstream: URL, path: string } | null}
+ * Path formats (all arrive as /v2/... from the Docker daemon):
+ * - /v2/                        → Docker Hub base (ping)
+ * - /v2/<name>/manifests/...    → Docker Hub (name may embed a registry host)
+ * - /v2/ghcr.io/<name>/...      → GHCR (ghcr.io is the embedded host)
+ * - /v2/quay.io/<name>/...      → Quay
+ * - /v2/registry.k8s.io/<name>/..→ k8s registry
+ * - /token?service=...          → auth relay (service selects upstream)
+ *
+ * @returns {{ host: string, upstream: URL, path: string, isAuth: boolean } | null}
  */
 function parseRegistryPath(pathname, search) {
   // Auth token endpoint: /token or /<host>/token
@@ -148,38 +156,51 @@ function parseRegistryPath(pathname, search) {
     };
   }
 
-  // /v2 and /v2/... → Docker Hub
-  if (pathname === '/v2' || pathname === '/v2/' || pathname.startsWith('/v2/')) {
-    // Docker Hub stores official images under `library/`. The Docker daemon
-    // only adds this prefix for docker.io, not for third-party registries.
-    // Rewrite single-component names (e.g. /v2/hello-world/...) to
-    // /v2/library/hello-world/... so Docker Hub recognises them.
+  // /v2 and /v2/ → Docker Hub base (ping) endpoint
+  if (pathname === '/v2' || pathname === '/v2/') {
+    return {
+      host: 'registry-1.docker.io',
+      upstream: new URL('/v2/' + search, 'https://registry-1.docker.io'),
+      path: '/v2/',
+      isAuth: false,
+    };
+  }
+
+  // /v2/... → registry request. The image name may embed a registry host
+  // (e.g. /v2/ghcr.io/owner/repo/manifests/tag). Detect it first.
+  if (pathname.startsWith('/v2/')) {
+    const rest = pathname.slice(4); // strip "/v2/"
+    // Check if the first path segment is a known registry host.
+    // e.g. "ghcr.io/kyverno/kyverno/manifests/v1.14.0" → host="ghcr.io"
+    const slashIdx = rest.indexOf('/');
+    const firstSeg = slashIdx === -1 ? rest : rest.slice(0, slashIdx);
+
+    if (REGISTRIES[firstSeg]) {
+      // Non-Docker Hub registry: route to the embedded host.
+      // Strip the embedded host prefix from the image name so the upstream
+      // path is /v2/<name-without-host>/... (e.g. /v2/kyverno/kyverno/...).
+      const nameWithoutHost = slashIdx === -1 ? '' : rest.slice(slashIdx + 1);
+      const upstreamPath = `/v2/${nameWithoutHost}`;
+      return {
+        host: firstSeg,
+        upstream: new URL(upstreamPath + search, REGISTRIES[firstSeg]),
+        path: upstreamPath,
+        isAuth: false,
+      };
+    }
+
+    // Docker Hub: rewrite single-component names to library/<name>.
+    // The Docker daemon only adds the `library/` prefix for docker.io,
+    // not for third-party registries, so we do it here.
     let rewrittenPath = pathname;
-    if (pathname.startsWith('/v2/') && pathname !== '/v2/') {
-      const m = pathname.match(/^\/v2\/([^/]+)\/(manifests|blobs|tags)/);
-      if (m) {
-        rewrittenPath = `/v2/library/${m[1]}/${m[2]}${pathname.slice(m[0].length)}`;
-      }
+    const m = pathname.match(/^\/v2\/([^/]+)\/(manifests|blobs|tags)/);
+    if (m) {
+      rewrittenPath = `/v2/library/${m[1]}/${m[2]}${pathname.slice(m[0].length)}`;
     }
     return {
       host: 'registry-1.docker.io',
       upstream: new URL(rewrittenPath + search, 'https://registry-1.docker.io'),
       path: rewrittenPath,
-      isAuth: false,
-    };
-  }
-
-  // /<host>/v2/... → other registries
-  const m = pathname.match(/^\/([^/]+)\/(v2\/.*)$/);
-  if (m) {
-    const host = m[1];
-    const rest = m[2];
-    const base = REGISTRIES[host];
-    if (!base) return null;
-    return {
-      host,
-      upstream: new URL(`/${rest}${search}`, base),
-      path: `/${rest}`,
       isAuth: false,
     };
   }
