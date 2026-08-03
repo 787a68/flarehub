@@ -199,6 +199,9 @@ export async function proxyRegistry(request, env) {
     }
   }
 
+  // Ensure Docker-Distribution-API-Version header on /v2 base endpoint
+  const isV2Base = target.path === '/v2' || target.path === '/v2/';
+
   // Handle 401: rewrite www-authenticate to point through proxy
   if (upstreamRes.status === 401) {
     const wwwAuth = upstreamRes.headers.get('www-authenticate');
@@ -206,6 +209,9 @@ export async function proxyRegistry(request, env) {
       const rewritten = rewriteWwwAuthenticate(wwwAuth, target.host, url);
       const headers = sanitizeHeaders(upstreamRes.headers);
       headers.set('www-authenticate', rewritten);
+      headers.set('cache-control', 'no-store');
+      headers.set('cdn-cache', 'no-store');
+      if (isV2Base) headers.set('docker-distribution-api-version', 'registry/2.0');
       withCors(headers);
       return new Response(upstreamRes.body, {
         status: 401,
@@ -219,6 +225,19 @@ export async function proxyRegistry(request, env) {
   const headers = sanitizeHeaders(upstreamRes.headers);
   withCors(headers);
 
+  // Don't cache error responses (4xx/5xx) — they're transient
+  if (upstreamRes.status >= 400) {
+    headers.set('cache-control', 'no-store');
+    headers.set('cdn-cache', 'no-store');
+    if (isV2Base) headers.set('docker-distribution-api-version', 'registry/2.0');
+    const body = request.method === 'HEAD' ? null : upstreamRes.body;
+    return new Response(body, {
+      status: upstreamRes.status,
+      statusText: upstreamRes.statusText,
+      headers,
+    });
+  }
+
   // Cache blob layers (immutable content-addressed)
   if (target.path.includes('/blobs/')) {
     headers.set('cache-control', 'public, max-age=86400, immutable');
@@ -227,6 +246,7 @@ export async function proxyRegistry(request, env) {
     headers.set('cache-control', 'public, max-age=300');
     headers.set('cdn-cache', 'public, max-age=300');
   }
+  if (isV2Base) headers.set('docker-distribution-api-version', 'registry/2.0');
 
   const body = request.method === 'HEAD' ? null : upstreamRes.body;
   return new Response(body, {
