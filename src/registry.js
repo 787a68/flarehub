@@ -16,7 +16,7 @@ import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, withCors } from
 import { checkAccess } from './access.js';
 
 /** Registry host → upstream base URL. */
-const REGISTRIES = {
+export const REGISTRIES = {
   'registry-1.docker.io': 'https://registry-1.docker.io',
   'ghcr.io': 'https://ghcr.io',
   'quay.io': 'https://quay.io',
@@ -29,7 +29,7 @@ const AUTH_ENDPOINTS = {
   'registry-1.docker.io': { base: 'https://auth.docker.io', path: '/token' },
   'ghcr.io': { base: 'https://ghcr.io', path: '/token' },
   'quay.io': { base: 'https://quay.io', path: '/v2/auth' },
-  'gcr.io': { base: 'https://gcr.io', path: '/v2/auth' },
+  'gcr.io': { base: 'https://gcr.io', path: '/v2/token' },
   'registry.k8s.io': { base: 'https://registry.k8s.io', path: '/v2/auth' },
 };
 
@@ -41,6 +41,11 @@ const AUTH_SERVICES = {
   'gcr.io': 'gcr.io',
   'registry.k8s.io': 'registry.k8s.io',
 };
+
+/** Reverse map: service identifier → registry host (for /token routing). */
+const SERVICE_TO_HOST = Object.fromEntries(
+  Object.entries(AUTH_SERVICES).map(([host, svc]) => [svc, host])
+);
 
 /** Maximum cache TTL for auth tokens (slightly under typical 300s expires_in). */
 const TOKEN_CACHE_TTL = 280;
@@ -143,8 +148,7 @@ function parseRegistryPath(pathname, search) {
       const params = new URLSearchParams(search);
       const service = params.get('service') || '';
       // Reverse-lookup: find the registry host whose AUTH_SERVICES matches
-      const serviceHost = Object.entries(AUTH_SERVICES).find(([, s]) => s === service);
-      if (serviceHost) host = serviceHost[0];
+      if (SERVICE_TO_HOST[service]) host = SERVICE_TO_HOST[service];
     }
 
     const ep = AUTH_ENDPOINTS[host] || AUTH_ENDPOINTS['registry-1.docker.io'];
@@ -351,8 +355,8 @@ export async function proxyRegistry(request, env) {
   // Some registries (k8s.io, Quay CDN) redirect manifests and blobs to
   // regional backends or CDNs. Docker daemon does not follow external
   // redirects, so we fetch and return the content ourselves.
-  // Redirect requests inherit the Authorization header from the original
-  // request so that token-authenticated redirects still work.
+  // Strip the Authorization header when redirecting to a different host
+  // to avoid leaking registry credentials to third-party CDNs.
   let redirectCount = 0;
   while (upstreamRes.status >= 300 && upstreamRes.status < 400 && redirectCount < 5) {
     const location = upstreamRes.headers.get('location');
@@ -365,6 +369,10 @@ export async function proxyRegistry(request, env) {
         headers: reqHeaders,
         redirect: 'manual',
       });
+      // Don't send registry credentials to a different host (e.g. CDN)
+      if (redirectUrl.host !== target.upstream.host) {
+        redirectReq.headers.delete('authorization');
+      }
       upstreamRes = await fetch(redirectReq);
     } catch (err) {
       return errorResponse(502, `Registry redirect fetch failed: ${err.message}`);

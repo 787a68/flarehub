@@ -56,6 +56,8 @@ jobs:
           BLACKLIST: ${{ vars.BLACKLIST }}
           CASE_INSENSITIVE: ${{ vars.CASE_INSENSITIVE }}
           RATE_LIMITER: ${{ vars.RATE_LIMITER }}
+          DOCKER_HUB_USER: ${{ vars.DOCKER_HUB_USER }}
+          DOCKER_HUB_PAT: ${{ secrets.DOCKER_HUB_PAT }}
         run: node scripts/prepare-deploy.mjs
 
       - name: Deploy Worker

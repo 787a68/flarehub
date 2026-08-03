@@ -31,10 +31,10 @@
 
   /** Usage examples for the panel. */
   var EXAMPLES = [
-    { label: 'GitHub Release', url: 'https://github.com/787a68/flarehub/releases/download/v1.0/flarehub.zip' },
-    { label: 'GitHub Archive', url: 'https://github.com/787a68/flarehub/archive/refs/tags/v1.0.tar.gz' },
-    { label: 'GitHub Raw', url: 'https://raw.githubusercontent.com/787a68/flarehub/main/README.md' },
-    { label: 'GitHub Codeload', url: 'https://codeload.github.com/787a68/flarehub/zip/refs/heads/main' },
+    { label: 'GitHub Release', url: 'https://github.com/user/repo/releases/download/v1.0/file.zip' },
+    { label: 'GitHub Archive', url: 'https://github.com/user/repo/archive/refs/tags/v1.0.tar.gz' },
+    { label: 'GitHub Raw', url: 'https://raw.githubusercontent.com/user/repo/main/README.md' },
+    { label: 'GitHub Codeload', url: 'https://codeload.github.com/user/repo/zip/refs/heads/main' },
     { label: 'Hugging Face', url: 'https://huggingface.co/bert-base-uncased/resolve/main/pytorch_model.bin' },
     { label: 'Docker Hub', cmd: 'docker pull your-domain.com/nginx' },
     { label: 'GHCR', cmd: 'docker pull your-domain.com/ghcr.io/user/image' },

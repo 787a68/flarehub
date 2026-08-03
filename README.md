@@ -6,9 +6,14 @@
 
 - **GitHub 加速**：Release 下载、Archive 打包、Raw 文件、Codeload、API、Gist、静态资源
 - **Docker Registry 代理**：支持 `docker pull` 直接拉取，兼容 Docker Hub、GHCR、Quay、GCR、registry.k8s.io
+  - 令牌中继：通过 `/token` 端点转发认证请求，Cache API 缓存匿名令牌（280s TTL）减少 401 往返
+  - Docker Hub 透传：保留原始 `auth.docker.io` 认证域，用户 `docker login docker.io` 即可享受个人配额
+  - 其他注册表：重写 `www-authenticate` realm 至代理 `/token`，由 Worker 转发上游认证
+  - 重定向跟随：自动跟随上游 302（最多 5 跳），跨域时剥离 `Authorization` 头防止凭证泄露
+  - 可选 PAT 注入：配置 `DOCKER_HUB_USER` / `DOCKER_HUB_PAT` 提升匿名速率限制
 - **Hugging Face 加速**：resolve、blob、raw 文件及 CDN LFS 大文件
 - **访问控制**：基于关键词的白名单 / 黑名单，黑名单优先
-- **速率限制**：基于 Cloudflare Rate Limiter 的全局 IP 级请求限流（含 CORS 预检）
+- **速率限制**：基于 Cloudflare Rate Limiter 的全局 IP 级请求限流（仅限代理请求，不含 CORS 预检与静态资源）
 - **前端面板**：内置玻璃拟态 UI，提供链接转换器、访问规则展示与使用示例
 - **CI/CD**：GitHub Actions 自动部署到 Cloudflare Workers，支持上游同步
 
@@ -16,8 +21,9 @@
 
 | 类别 | 域名 |
 |------|------|
-| GitHub | `github.com`、`raw.githubusercontent.com`、`api.github.com`、`codeload.github.com`、`github.githubassets.com`、`gist.github.com`、`gist.githubusercontent.com` |
-| Docker | `registry-1.docker.io`、`ghcr.io`、`quay.io`、`gcr.io`、`registry.k8s.io`、`download.docker.com` |
+| GitHub | `github.com`、`raw.githubusercontent.com`、`api.github.com`、`codeload.github.com`、`github.githubassets.com`、`gist.github.com`、`gist.githubusercontent.com`、`objects.githubusercontent.com`、`github-releases.githubusercontent.com` |
+| Docker Registry | `registry-1.docker.io`、`ghcr.io`、`quay.io`、`gcr.io`、`registry.k8s.io` |
+| Docker 二进制 | `download.docker.com` |
 | Hugging Face | `huggingface.co`、`cdn-lfs.hf.co`、`cdn-lfs-us-1.hf.co` |
 
 ## 使用方法
@@ -89,6 +95,8 @@ docker pull flarehub.example.com/registry.k8s.io/pause:3.9
 sudo systemctl restart docker
 ```
 
+> Docker Hub 认证透传：由于 Docker Hub 的 `www-authenticate` 保持原始 `auth.docker.io` 域，用户可通过 `docker login docker.io` 登录并享受个人 200 次 / 6 小时配额。其他注册表（GHCR、Quay 等）的认证由代理 `/token` 端点中继，无需额外登录。
+
 ### Hugging Face 加速
 
 | 场景 | 加速链接 |
@@ -127,8 +135,6 @@ cd flarehub
 4. 点击 **Create Token**，选择 **Edit Cloudflare Workers** 模板
 5. 确认权限包含：
    - Account - Workers Scripts - Edit
-   - Account - Account Settings - Read
-   - Zone - Zone - Read（如需绑定自定义域名）
 6. 创建后复制 Token 值（仅显示一次）
 
 #### 3. 配置 GitHub Secrets
@@ -139,6 +145,7 @@ cd flarehub
 |-------------|----|
 | `CF_API_TOKEN` | 上一步创建的 Cloudflare API Token |
 | `CF_ACCOUNT_ID` | 你的 Cloudflare Account ID |
+| `DOCKER_HUB_PAT` | Docker Hub 访问令牌，用于匿名速率限制提升（可选） |
 
 #### 4. 配置 GitHub Variables（可选）
 
@@ -151,6 +158,7 @@ cd flarehub
 | `BLACKLIST` | 黑名单关键词，逗号分隔 | 空 |
 | `CASE_INSENSITIVE` | 关键词匹配是否忽略大小写 | `false` |
 | `RATE_LIMITER` | 每分钟请求限制数（正整数） | `120` |
+| `DOCKER_HUB_USER` | Docker Hub 用户名，配合 `DOCKER_HUB_PAT` 提升匿名速率限制 | 空 |
 
 示例：
 
@@ -159,6 +167,7 @@ WHITELIST = my-org, my-repo
 BLACKLIST = private, internal
 CASE_INSENSITIVE = true
 RATE_LIMITER = 60
+DOCKER_HUB_USER = myuser
 ```
 
 #### 5. 触发部署
@@ -182,22 +191,28 @@ RATE_LIMITER = 60
 | `main` | Worker 入口文件，默认 `src/worker.js` |
 | `compatibility_date` | 兼容性日期，影响运行时行为 |
 | `assets` | 静态资源配置，部署时由 `prepare-deploy.mjs` 将 `public/` 复制到 `.wrangler/public/` 并内联配置，通过 `ASSETS` 绑定提供 |
-| `assets.run_worker_first` | 这些路径优先由 Worker 处理，而非直接返回静态文件 |
-| `assets.not_found_handling` | 静态资源 404 时返回 `404.html` 页面 |
-| `ratelimits` | Rate Limiter 绑定，`namespace_id` 为限流命名空间 |
+| `assets.run_worker_first` | 匹配的路径优先由 Worker 处理，包括 `/v2/*`、`/token`、各注册表与上游域名通配符、`/https://*` 完整 URL 格式 |
+| `assets.not_found_handling` | 静态资源 404 时返回 `404-page` 页面 |
+| `ratelimits` | Rate Limiter 绑定，`namespace_id` 为限流命名空间，默认 120 次 / 60 秒 |
 | `vars` | 环境变量默认值，可被 Cloudflare Dashboard / GitHub Variables 覆盖 |
 | `placement.mode` | `smart` 表示由 Cloudflare 自动选择最优数据中心 |
 | `observability` | 启用日志与可观测性 |
 
 ### 环境变量
 
-| 变量 | 作用 | 示例 |
-|------|------|------|
-| `WHITELIST` | 仅允许匹配关键词的资源访问，逗号分隔 | `my-org, my-repo` |
-| `BLACKLIST` | 拒绝匹配关键词的资源访问，黑名单优先 | `private, internal` |
-| `CASE_INSENSITIVE` | 关键词匹配是否忽略大小写 | `true` / `false` |
+所有环境变量均可通过 GitHub Variables / Secrets 在部署时注入，也可在 Cloudflare Dashboard 中直接修改。
+
+| 变量 | 作用 | GitHub 设置 | 示例 |
+|------|------|-------------|------|
+| `WHITELIST` | 仅允许匹配关键词的资源访问，逗号分隔 | Variable | `my-org, my-repo` |
+| `BLACKLIST` | 拒绝匹配关键词的资源访问，黑名单优先 | Variable | `private, internal` |
+| `CASE_INSENSITIVE` | 关键词匹配是否忽略大小写 | Variable | `true` / `false` |
+| `DOCKER_HUB_USER` | Docker Hub 用户名，配合 PAT 提升匿名速率限制 | Variable | `myuser` |
+| `DOCKER_HUB_PAT` | Docker Hub 访问令牌，仅在客户端未提供凭证时注入 | Secret | `dckr_pat_xxx` |
 
 > `RATE_LIMITER` 不是环境变量，而是 GitHub Variable，用于在部署时设置 Rate Limiter 绑定的请求阈值（每 60 秒每 IP 最大请求数）。
+
+> `DOCKER_HUB_USER` / `DOCKER_HUB_PAT` 为可选配置。设置后，当客户端未携带认证凭证时，代理会自动注入 Basic 认证以提升 Docker Hub 速率限制。已认证的客户端令牌不会被缓存，避免用户间凭证泄露。
 
 访问规则匹配逻辑：
 - 对 GitHub 代理，匹配对象为 `owner/repo`
@@ -275,6 +290,13 @@ BLACKLIST = private, internal
 ### 如何关闭前端面板只保留代理功能？
 
 设置 GitHub Variable `DEPLOY_FRONTEND=false`，部署脚本会移除 `assets` 配置，仅部署 Worker。
+
+### 如何提升 Docker Hub 速率限制？
+
+两种方式：
+
+1. **个人认证**：Docker Hub 的 `www-authenticate` 保持原始 `auth.docker.io` 域，用户通过 `docker login docker.io` 登录后即可享受个人 200 次 / 6 小时配额，令牌不经过代理缓存。
+2. **全局 PAT 注入**：在 Cloudflare Dashboard 中设置环境变量 `DOCKER_HUB_USER` 和 `DOCKER_HUB_PAT`，代理会在匿名请求时自动注入 Basic 认证，提升速率限制。注入的令牌不会被缓存。
 
 ## 许可证
 

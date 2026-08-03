@@ -11,13 +11,13 @@
  */
 
 import { proxyGithub } from './github.js';
-import { proxyRegistry } from './registry.js';
+import { proxyRegistry, REGISTRIES } from './registry.js';
 import { errorResponse, corsPreflight } from './http.js';
 
-/** Registry hosts that appear as path prefix. */
-const REGISTRY_HOSTS = new Set([
-  'ghcr.io', 'quay.io', 'gcr.io', 'registry.k8s.io',
-]);
+/** Non-Docker Hub registry hosts (for path-prefix routing). */
+const REGISTRY_HOSTS = new Set(
+  Object.keys(REGISTRIES).filter((h) => h !== 'registry-1.docker.io')
+);
 
 /** Set of all known upstream hosts for fast lookup. */
 const KNOWN_HOSTS = new Set([
