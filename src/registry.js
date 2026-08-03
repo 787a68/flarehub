@@ -139,10 +139,21 @@ function parseRegistryPath(pathname, search) {
 
   // /v2 and /v2/... → Docker Hub
   if (pathname === '/v2' || pathname === '/v2/' || pathname.startsWith('/v2/')) {
+    // Docker Hub stores official images under `library/`. The Docker daemon
+    // only adds this prefix for docker.io, not for third-party registries.
+    // Rewrite single-component names (e.g. /v2/hello-world/...) to
+    // /v2/library/hello-world/... so Docker Hub recognises them.
+    let rewrittenPath = pathname;
+    if (pathname.startsWith('/v2/') && pathname !== '/v2/') {
+      const m = pathname.match(/^\/v2\/([^/]+)\/(manifests|blobs|tags)/);
+      if (m) {
+        rewrittenPath = `/v2/library/${m[1]}/${m[2]}${pathname.slice(m[0].length)}`;
+      }
+    }
     return {
       host: 'registry-1.docker.io',
-      upstream: new URL(pathname + search, 'https://registry-1.docker.io'),
-      path: pathname,
+      upstream: new URL(rewrittenPath + search, 'https://registry-1.docker.io'),
+      path: rewrittenPath,
       isAuth: false,
     };
   }
@@ -184,10 +195,27 @@ function extractImageName(path) {
  * On success, cache the token for cross-request reuse to reduce
  * 401 round-trips and Docker Hub rate-limit consumption.
  */
-async function handleAuth(upstream, request, host) {
+async function handleAuth(upstream, request, host, env) {
+  const reqHeaders = sanitizeRequestHeaders(request.headers);
+
+  // Check if the client provided credentials (e.g. docker login to docker.io
+  // with registry-mirrors configured). These tokens are per-user and must
+  // NOT be cached — otherwise one user's authenticated token could leak
+  // to anonymous users.
+  const hasClientAuth = reqHeaders.has('authorization');
+
+  // Optionally inject a global PAT to upgrade anonymous rate limits.
+  // Only inject when the client didn't provide their own credentials.
+  let injectedPAT = false;
+  if (!hasClientAuth && env?.DOCKER_HUB_PAT && env?.DOCKER_HUB_USER) {
+    const cred = btoa(`${env.DOCKER_HUB_USER}:${env.DOCKER_HUB_PAT}`);
+    reqHeaders.set('authorization', `Basic ${cred}`);
+    injectedPAT = true;
+  }
+
   const req = new Request(upstream, {
     method: request.method,
-    headers: sanitizeRequestHeaders(request.headers),
+    headers: reqHeaders,
     redirect: 'manual',
   });
 
@@ -198,8 +226,10 @@ async function handleAuth(upstream, request, host) {
     return errorResponse(502, `Auth relay failed: ${err.message}`);
   }
 
-  // Cache the token on success (200) for cross-request reuse
-  if (res.status === 200) {
+  // Only cache anonymous tokens (no client credentials, no injected PAT).
+  // Authenticated tokens are per-user and must not be shared.
+  const cacheable = !hasClientAuth && !injectedPAT;
+  if (res.status === 200 && cacheable) {
     try {
       const cloned = res.clone();
       const data = await cloned.json();
@@ -245,7 +275,7 @@ export async function proxyRegistry(request, env) {
 
   // Auth token relay
   if (target.isAuth) {
-    return handleAuth(target.upstream, request, target.host);
+    return handleAuth(target.upstream, request, target.host, env);
   }
 
   // Access control: check image name
@@ -312,7 +342,12 @@ export async function proxyRegistry(request, env) {
   // Ensure Docker-Distribution-API-Version header on /v2 base endpoint
   const isV2Base = target.path === '/v2' || target.path === '/v2/';
 
-  // Handle 401: rewrite www-authenticate to point through proxy.
+  // Handle 401: pass through the upstream www-authenticate challenge
+  // unchanged so the Docker daemon authenticates directly with the
+  // upstream auth service (e.g. auth.docker.io). This way:
+  //   - Users only need `docker login docker.io` (not `docker login aff.al`)
+  //   - Authenticated tokens carry the user's rate-limit quota (200/6h)
+  //   - The daemon sends the token back to us; we forward it to the upstream
   // If we pre-injected a cached token that turned out to be stale/invalid,
   // evict it from the cache so the next request gets a fresh token.
   if (upstreamRes.status === 401) {
@@ -322,9 +357,8 @@ export async function proxyRegistry(request, env) {
 
     const wwwAuth = upstreamRes.headers.get('www-authenticate');
     if (wwwAuth) {
-      const rewritten = rewriteWwwAuthenticate(wwwAuth, target.host, url);
       const headers = sanitizeHeaders(upstreamRes.headers);
-      headers.set('www-authenticate', rewritten);
+      // Keep the original www-authenticate (realm points to upstream auth)
       headers.set('cache-control', 'no-store');
       headers.set('cdn-cache', 'no-store');
       if (isV2Base) headers.set('docker-distribution-api-version', 'registry/2.0');
@@ -372,25 +406,6 @@ export async function proxyRegistry(request, env) {
   });
 }
 
-/**
- * Rewrite the www-authenticate header to point the client
- * to the proxy's /token endpoint instead of the upstream auth.
- *
- * Example:
- *   Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/nginx:pull"
- * →
- *   Bearer realm="https://your-domain.com/token",service="registry.docker.io",scope="repository:library/nginx:pull"
- */
-function rewriteWwwAuthenticate(header, host, proxyUrl) {
-  // Build the proxy's token endpoint URL
-  const tokenPath = host === 'registry-1.docker.io' ? '/token' : `/${host}/token`;
-  const realm = `${proxyUrl.origin}${tokenPath}`;
 
-  // Replace the realm= value in the Bearer challenge
-  return header.replace(
-    /realm="[^"]*"/,
-    `realm="${realm}"`
-  );
-}
 
 
