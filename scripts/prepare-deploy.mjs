@@ -21,8 +21,6 @@ const enabled = (name, fallback = true) => {
   throw new Error(`${name} must be true or false`);
 };
 
-const rules = (name) => value(name).split(",").map((item) => item.trim()).filter(Boolean);
-
 const rateLimit = value("RATE_LIMITER");
 if (rateLimit) {
   if (!/^\d+$/.test(rateLimit) || Number(rateLimit) < 1) {
@@ -35,18 +33,11 @@ if (!enabled("DEPLOY_FRONTEND")) delete config.assets;
 
 const caseInsensitive = /^(1|true|yes|on)$/i.test(String(process.env.CASE_INSENSITIVE || "").trim());
 const frontendConfig = {
-  whitelist: rules("WHITELIST"),
-  blacklist: rules("BLACKLIST"),
+  whitelist: (value("WHITELIST") || "").split(",").map((item) => item.trim()).filter(Boolean),
+  blacklist: (value("BLACKLIST") || "").split(",").map((item) => item.trim()).filter(Boolean),
   caseInsensitive,
 };
-config.vars = {
-  ...(config.vars || {}),
-  WHITELIST: frontendConfig.whitelist.join(","),
-  BLACKLIST: frontendConfig.blacklist.join(","),
-  CASE_INSENSITIVE: String(caseInsensitive),
-};
-const frontendConfigOutput = new URL("../public/config.js", import.meta.url);
-await writeFile(frontendConfigOutput, `globalThis.FLAREHUB_CONFIG = ${JSON.stringify(frontendConfig)};\n`);
+await writeFile(new URL("../public/config.js", import.meta.url), `globalThis.FLAREHUB_CONFIG = ${JSON.stringify(frontendConfig)};\n`);
 
 await mkdir(outputDirectory, { recursive: true });
 await writeFile(output, `${JSON.stringify(config, null, 2)}\n`);

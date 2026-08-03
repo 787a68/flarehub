@@ -1,121 +1,293 @@
 # FlareHub
 
-部署在 Cloudflare Workers 上的代理服务，提供网页界面和 API，支持 GitHub、Hugging Face 与 OCI/Docker Registry 的代理访问、资源搜索和文件下载。
+基于 Cloudflare Workers 的轻量级边缘代理，一站式加速 GitHub 资源、Docker 镜像与 Hugging Face 模型文件。
 
-## 用法
+## 功能
 
-以下示例中的 `<地址>` 是部署后的 Worker 主机名，例如 `flarehub.<你的子域>.workers.dev`。
+| 功能 | 说明 |
+|------|------|
+| **GitHub 代理** | Releases、Raw、Blob（自动转 Raw）、Archive、Codeload、Gist、API、Assets |
+| **Docker Registry 镜像** | `docker.io`、`ghcr.io`、`gcr.io`、`quay.io`、`registry.k8s.io` |
+| **Docker 镜像下载** | 一键下载 Docker 镜像为 `.tar` 文件 |
+| **Hugging Face 代理** | 模型文件、Spaces、CDN-LFS |
+| **访问控制** | 支持白名单/黑名单，关键词匹配，可配大小写敏感 |
+| **速率限制** | 可配置的请求频率限制 |
 
-### 部署前端时
+## 快速使用
 
-`DEPLOY_FRONTEND` 默认为 `true`。打开 `https://<地址>`，可通过网页使用以下功能：
+在资源原始 URL 前加上本站专属域名即可：
 
-- 粘贴 GitHub、Hugging Face 或 Docker 官方下载链接并生成代理地址
-- 搜索 Hugging Face 公开模型、浏览文件并下载
-- 搜索 Docker Hub 镜像、查询标签、复制拉取命令或下载 OCI 归档
-
-### 不部署前端时
-
-设置 `DEPLOY_FRONTEND=false` 后只部署 Worker，不提供首页和搜索界面，代理路由与 API 保持可用。
-
-资源代理地址的格式是 `https://<地址>/<原始地址去掉协议>`：
-
-```text
-https://<地址>/github.com/user/repo/releases/download/v1.0/file.zip
-https://<地址>/raw.githubusercontent.com/user/repo/main/file.txt
-https://<地址>/huggingface.co/user/model/resolve/main/file.bin
-https://<地址>/download.docker.com/linux/static/stable/x86_64/docker.tgz
+```
+原始链接: https://raw.githubusercontent.com/user/repo/main/file.go
+代理链接: https://你的域名/raw.githubusercontent.com/user/repo/main/file.go
 ```
 
-Hugging Face 文件地址增加 `?__flarehub_download=1` 可强制以附件形式下载：
+### GitHub 资源
 
-```text
-https://<地址>/huggingface.co/user/model/resolve/main/file.bin?__flarehub_download=1
+```bash
+# Release 下载
+https://你的域名/github.com/787a68/flarehub/releases/download/v1.0/file.zip
+
+# Archive 下载
+https://你的域名/github.com/user/repo/archive/refs/tags/v1.0.tar.gz
+
+# Codeload 下载
+https://你的域名/codeload.github.com/user/repo/zip/refs/heads/main
+
+# Raw 文件
+https://你的域名/raw.githubusercontent.com/user/repo/main/file.go
+
+# Blob 页面（自动转为 Raw 下载）
+https://你的域名/github.com/user/repo/blob/main/file.go
+
+# Gist Raw
+https://你的域名/gist.github.com/user/gist_id/raw
+
+# API 请求
+https://你的域名/api.github.com/repos/user/repo/releases
+
+# Assets 静态资源
+https://你的域名/github.githubassets.com/assets/123.js
 ```
 
-Docker/OCI Registry 可直接通过部署地址拉取：
+### Docker 镜像拉取
 
-```text
-docker pull <地址>/nginx:latest
-docker pull <地址>/user/image:tag
-docker pull <地址>/ghcr.io/user/image:tag
-docker pull <地址>/quay.io/org/image:tag
-docker pull <地址>/gcr.io/project/image:tag
-docker pull <地址>/registry.k8s.io/pause:3.9
+```bash
+# Docker Hub 官方镜像
+docker pull 你的域名/nginx:latest
+docker pull 你的域名/library/alpine:3.20
+
+# Docker Hub 用户镜像
+docker pull 你的域名/username/image:tag
+
+# GitHub Container Registry
+docker pull 你的域名/ghcr.io/user/image:tag
+
+# Google Container Registry
+docker pull 你的域名/gcr.io/project/image:tag
+
+# Quay.io
+docker pull 你的域名/quay.io/org/image:tag
+
+# Kubernetes Registry
+docker pull 你的域名/registry.k8s.io/pause:3.9
 ```
 
-也可以直接调用下列 HTTP API。
+### Docker 镜像下载（浏览器一键下载 .tar）
 
-### API
+```
+https://你的域名/api/image/download?image=library/alpine:latest&platform=linux/amd64
+```
 
-| 路径 | 用途 |
-| --- | --- |
-| `GET /api/search?q=nginx&page=1&page_size=25` | 搜索 Docker Hub 镜像 |
-| `GET /api/tags?image=library/nginx&page_size=100` | 查询镜像标签 |
-| `GET /api/hf/search?q=model&limit=30` | 搜索 Hugging Face 模型 |
-| `GET /api/hf/files?repo=owner/model&revision=main` | 列举模型仓库文件 |
-| `GET /api/image/download?...` | 下载 OCI 镜像归档 |
-| `GET /token?...` | 转发 Registry Bearer Token |
-| `/v2/*` | OCI/Docker Registry API v2 代理 |
+参数说明：
+- `image`：镜像名称（必填），格式 `<repo>[:<tag>]`，默认 tag 为 `latest`
+- `platform`：目标架构，默认 `linux/amd64`，可选如 `linux/arm64`
 
-### 错误路径
+### Hugging Face 模型文件
 
-部署前端时，无效路径由 Static Assets 直接返回 `404.html`，不进入 Worker。纯 Worker 模式下，无效路径由 Worker 返回纯文本 `404`。
+```bash
+# 模型文件
+https://你的域名/huggingface.co/user/model-name/resolve/main/file.bin
 
-## 部署
+# Spaces 文件
+https://你的域名/huggingface.co/spaces/user/space/resolve/main/app.py
 
-### 前置条件
+# CDN-LFS 文件
+https://你的域名/cdn-lfs.hf.co/user/model/file.bin
+```
 
-- Cloudflare 账户
-- 一个 GitHub 账户（用于 Fork 仓库和 GitHub Actions）
+### Docker 二进制下载
 
-### 1. Fork 仓库
+```bash
+# Docker 官方二进制
+https://你的域名/download.docker.com/linux/static/stable/x86_64/docker-27.0.0.tgz
+```
 
-Fork 本仓库到你的 GitHub 账户，进入 Fork 仓库的 **Actions** 页面，手动启用 GitHub Actions（Fork 后默认关闭）。
+## 本地开发
 
-> 仓库包含 `Sync upstream` 工作流，用于自动同步原仓库更新。Fork 用户需在 Actions 页面手动启用该工作流，默认每天 UTC 06:06 运行一次，也支持手动触发。仅执行 fast-forward 合并，不覆盖 Fork 自有提交。
+### 前置要求
 
-### 2. 获取 Cloudflare Account ID
+- [Node.js](https://nodejs.org/) >= 18
+- npm >= 9
 
-Cloudflare Dashboard → **Account home**，找到账号行，点击末尾菜单选择 **Copy account ID**。或在 **Workers & Pages** 页面的 **Account details** 中点击复制。
+### 安装与运行
 
-### 3. 创建 API Token
+```bash
+# 克隆仓库
+git clone https://github.com/787a68/flarehub.git
+cd flarehub
 
-Cloudflare Dashboard → **Manage Account → API Tokens**，选择 **Create Token**。可使用 **Edit Cloudflare Workers** 模板，或创建自定义 Token，权限至少包含 `Workers Scripts Write`。建议将 Token 资源范围限制到需要部署的账号。创建后立即复制 Token。
+# 安装依赖
+npm install
 
-### 4. 配置 GitHub Secrets
+# 启动本地开发服务器
+npx wrangler dev
+```
 
-Fork 仓库 → **Settings → Secrets and variables → Actions → Secrets**，添加：
+启动后本地地址通常为 `http://localhost:8787`，你可以使用此行测试：
 
-| Secret | 必填 | 说明 |
-| --- | --- | --- |
-| `CF_API_TOKEN` | 是 | Cloudflare API Token |
-| `CF_ACCOUNT_ID` | 是 | Cloudflare Account ID |
+```bash
+curl -v http://localhost:8787/raw.githubusercontent.com/787a68/flarehub/main/README.md
+```
 
-工作流会将这两个 Secret 映射为 Wrangler 环境变量 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID` 进行部署。
+### 运行测试
 
-### 5. 配置 Variables
+```bash
+npm test
+# 或者直接
+node --test test/
+```
 
-在同一页面切换到 **Variables**，按需添加：
+### 检查配置
 
-| Variable | 默认值 | 说明 |
-| --- | --- | --- |
-| `DEPLOY_FRONTEND` | `true` | `false` 时不部署前端静态资源 |
-| `RATE_LIMITER` | `120` | 同 IP 每分钟共享请求额度，正整数 |
-| `WHITELIST` | 空 | 允许关键词，逗号分隔；空时允许所有 |
-| `BLACKLIST` | 空 | 禁止关键词，逗号分隔；黑名单优先于白名单 |
-| `CASE_INSENSITIVE` | `false` | `true` 时黑白名单匹配忽略大小写 |
+```bash
+npm run check
+```
 
-黑白名单使用关键词包含匹配。默认区分大小写；设置 `CASE_INSENSITIVE=true` 后忽略大小写。部署脚本将此规则同步写入前端静态配置与 Worker 运行时。
+此命令会校验 `wrangler.jsonc` 的配置完整性。
 
-### 6. 部署
+### 项目结构
 
-进入 **Actions → Deploy to Cloudflare Workers → Run workflow**，选择 `main` 分支运行。之后推送 `main` 分支会自动触发部署。
+```
+flarehub/
+├── public/                  # 前端静态资源
+│   ├── index.html           # 主页面
+│   ├── app.js               # 前端交互逻辑
+│   ├── app.css              # 样式（毛玻璃设计，自动适配暗色模式）
+│   ├── config.js            # 部署时自动生成的运行时配置（.gitignore）
+│   └── favicon.svg
+├── src/                     # Worker 源码
+│   ├── worker.js            # 入口：路由分发
+│   ├── github.js            # GitHub / HF / Docker 二进制代理
+│   ├── registry.js          # Docker Registry v2 代理 + Token
+│   ├── image-download.js    # Docker 镜像 → tar 下载
+│   ├── http.js              # HTTP 工具（错误处理、CORS、缓存等）
+│   └── access.js            # 访问控制（白名单/黑名单）
+├── scripts/
+│   └── prepare-deploy.mjs   # 部署前配置生成脚本
+├── test/                    # 测试文件
+│   ├── worker.test.js       # Worker 路由和代理逻辑测试（16 个用例）
+│   └── features.test.js     # 项目特性与配置完整性测试（9 个用例）
+├── wrangler.jsonc           # Wrangler 配置
+└── package.json
+```
 
-## 运行规则
+## 部署到 Cloudflare Workers
 
-- **限速**：按客户端 IP 共享，默认每分钟 120 次。
-- **黑白名单**：默认空，关键词包含匹配；黑名单优先。
-- **缓存**：Docker Hub 搜索与标签响应使用短时边缘缓存，减少上游限流触发。
-- **代理安全**：仅允许硬编码的受信任 HTTPS 主机；跨域重定向不携带客户端认证凭据。
-- **Smart Placement**：已启用。
+### 方式一：一键部署（推荐）
+
+点击下方按钮自动 Fork 并部署到你的 Cloudflare 账户：
+
+> 部署前需准备 Cloudflare 账户，并在该账户的 Dashboard 中创建一个 **API Token**（权限：Account → Workers Scripts → Edit）。
+
+配置 GitHub Actions Secrets（仓库 Settings → Secrets and variables → Actions）：
+
+| Secret | 说明 | 必填 |
+|--------|------|------|
+| `CF_API_TOKEN` | Cloudflare API Token | 是 |
+| `CF_ACCOUNT_ID` | Cloudflare 账户 ID（Dashboard 右侧） | 是 |
+
+配置 GitHub Actions Variables（可选）：
+
+| Variable | 说明 | 默认值 |
+|----------|------|--------|
+| `WHITELIST` | 白名单，逗号分隔的关键词，如 `787a68/flarehub,library/` | 无（允许全部） |
+| `BLACKLIST` | 黑名单，逗号分隔的关键词 | 无 |
+| `CASE_INSENSITIVE` | 是否忽略大小写，`true` / `false` | `false` |
+| `RATE_LIMITER` | 每分钟每 IP 请求上限（正整数） | 1000 |
+| `DEPLOY_FRONTEND` | 是否部署前端页面，`true` / `false` | `true` |
+
+推送代码到 `main` 分支即可自动部署。
+
+### 方式二：手动部署
+
+```bash
+# 安装 Wrangler CLI
+npm install -g wrangler
+
+# 登录 Cloudflare
+npx wrangler login
+
+# 配置 wrangler.jsonc 中的 account_id 为你自己的账户 ID
+
+# 部署
+npm run deploy
+```
+
+### 方式三：本地构建后手动上传
+
+```bash
+# 生成部署配置文件到 .wrangler/deploy.jsonc
+CF_ACCOUNT_ID=你的账户ID node scripts/prepare-deploy.mjs
+
+# 部署
+npx wrangler deploy --config .wrangler/deploy.jsonc
+```
+
+### 配置 Workers 变量
+
+部署后，可在 Cloudflare Dashboard → Workers & Pages → flarehub → Settings → Variables 中配置以下变量（优先级高于 GH Variables）：
+
+| 变量 | 说明 |
+|------|------|
+| `WHITELIST` | 白名单关键词，逗号分隔。为空则不限制 |
+| `BLACKLIST` | 黑名单关键词，逗号分隔。黑名单优先级高于白名单 |
+| `CASE_INSENSITIVE` | `true` 忽略大小写，`false` 区分大小写 |
+| `RATE_LIMITER` | 绑定 KV 限速器，每分钟每 IP 请求上限 |
+
+### 绑定自定义域名
+
+1. 进入 Cloudflare Dashboard → Workers & Pages → flarehub
+2. 点击 **Triggers** → **Custom Domains** → **Add Custom Domain**
+3. 输入你的域名（如 `hub.example.com`）
+4. Cloudflare 会自动配置 DNS（域名需在 Cloudflare 上管理）
+
+### 使用 Docker 镜像加速
+
+使用代理域名替换镜像源地址：
+
+```bash
+# 方式一：每次拉取时指定
+docker pull hub.example.com/library/nginx:latest
+
+# 方式二：配置 Docker daemon 全局代理（推荐）
+# 编辑 /etc/docker/daemon.json（Linux）或 Docker Desktop Settings（Mac/Windows）
+{
+  "registry-mirrors": ["https://hub.example.com"]
+}
+# 重启 Docker 后即可直接 docker pull nginx:latest
+```
+
+> **注意**：当使用 `registry-mirrors` 方式时，`docker pull nginx:latest` 会自动走代理（仅 Docker Hub 官方镜像）。用户命名空间的镜像仍需手动指定域名。
+
+## 访问控制详解
+
+FlareHub 通过关键词匹配来控制代理访问范围：
+
+- **白名单**：设置后，只有匹配白名单关键词的请求才会被代理。未设置则允许全部。
+- **黑名单**：匹配黑名单的请求将被拒绝。黑名单优先级高于白名单。
+- **匹配方式**：关键词包含匹配（子串匹配），默认区分大小写。
+- **影响范围**：白名单/黑名单对 GitHub 代理、Docker Registry、Docker 镜像下载、Hugging Face 代理全部生效。
+
+示例：
+
+```
+WHITELIST = "787a68/flarehub, library/, pytorch"
+BLACKLIST = "private-repo, secret-model"
+```
+
+- `github.com/787a68/flarehub/releases/*` → 放行（匹配白名单 `787a68/flarehub`）
+- `docker pull hub.example.com/library/nginx` → 放行（匹配白名单 `library/`）
+- `huggingface.co/user/pytorch-model/resolve/*` → 放行（匹配白名单 `pytorch`）
+- `github.com/user/private-repo/*` → 拒绝（匹配黑名单 `private-repo`）
+
+## 技术栈
+
+- **运行时**：Cloudflare Workers
+- **前端**：原生 HTML/CSS/JS（毛玻璃设计，自动暗色模式适配，零依赖）
+- **测试**：Node.js 原生 `node:test` + `assert`
+- **部署**：GitHub Actions + Wrangler CLI
+
+## License
+
+[MIT](LICENSE)

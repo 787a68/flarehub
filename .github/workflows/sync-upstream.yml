@@ -1,36 +1,54 @@
-# Fork 用户需在 Actions 页面手动启用此工作流
-name: Sync upstream
+name: Sync Upstream
 
 on:
   schedule:
-    - cron: "6 6 * * *"
+    - cron: "0 0 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
-  group: sync-upstream-main
-  cancel-in-progress: false
+  group: sync-upstream
+  cancel-in-progress: true
 
 jobs:
   sync:
-    # 原仓库跳过，仅在 Fork 上运行
-    if: github.repository != '787a68/flarehub'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
-      - name: Checkout fork
+      - name: Checkout
         uses: actions/checkout@v5
         with:
           ref: main
-          fetch-depth: 0
 
-      - name: Fast-forward from upstream
-        shell: bash
+      - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/787a68/flarehub.git
-          git fetch --no-tags upstream main
-          git merge --ff-only upstream/main
-          git push origin main
+          git fetch upstream main
+
+      - name: Merge upstream
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git merge --no-edit upstream/main; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Push changes
+        if: steps.merge.outputs.changed == 'true'
+        run: git push origin main
+
+      - name: Create PR for conflicts
+        if: failure()
+        uses: peter-evans/create-pull-request@v7
+        with:
+          title: "Sync upstream (conflicts)"
+          body: "Automated sync from upstream resulted in merge conflicts. Please resolve manually."
+          branch: sync/upstream-conflicts

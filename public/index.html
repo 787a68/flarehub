@@ -10,114 +10,102 @@
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<div class="aurora"></div>
-<nav class="navbar">
+
+<div class="bg-layer">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+  <div class="orb orb-4"></div>
+</div>
+
+<header class="nav-glass">
   <div class="nav-inner">
-    <a href="/" class="logo"><span class="logo-mark">F</span><span>FlareHub</span></a>
-    <div class="nav-tabs">
-      <button class="nav-tab active" data-view="github">GitHub 加速</button>
-      <button class="nav-tab" data-view="search">镜像搜索</button>
-      <button class="nav-tab" data-view="models">模型搜索</button>
+    <a href="/" class="logo">
+      <span class="logo-mark">F</span>
+      <span class="logo-text">FlareHub</span>
+    </a>
+  </div>
+</header>
+
+<main class="content">
+
+  <!-- Hero -->
+  <section class="hero-glass">
+    <h1 class="hero-title">GitHub · Docker · Hugging Face<br>边缘加速</h1>
+    <p class="hero-sub">在资源地址前添加本站域名，通过全球边缘网络流式传输，高速访问。</p>
+  </section>
+
+  <!-- Converter -->
+  <div class="card-glass">
+    <div class="card-icon">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+    </div>
+    <h2 class="card-heading">快速转换加速链接</h2>
+    <p class="card-desc">支持 GitHub、Docker 官方下载及 Hugging Face 资源地址</p>
+    <form id="proxyForm" novalidate>
+      <div class="input-glass-wrap">
+        <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        <input type="url" class="input-glass" id="githubLinkInput" placeholder="粘贴或输入资源链接，按回车转换。例如 https://github.com/787a68/flarehub" aria-label="上游资源地址" autocomplete="url">
+        <button class="btn-glass btn-primary" id="pasteConvertButton" type="button">粘贴并转换</button>
+      </div>
+    </form>
+    <div class="output-area hidden" id="githubOutput">
+      <div class="output-glass" id="githubFormattedLink"></div>
+      <div class="output-row">
+        <button class="btn-glass btn-ghost" id="copyButton">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          复制链接
+        </button>
+        <button class="btn-glass btn-ghost" id="downloadButton">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          立即下载
+        </button>
+      </div>
     </div>
   </div>
-</nav>
-<main class="main">
-  <section class="card glass compact" aria-labelledby="accessPolicyTitle">
-    <h2 class="card-title" id="accessPolicyTitle">全局访问规则</h2>
-    <p class="card-desc">以下黑白名单对 GitHub、Docker 与 Hugging Face 的代理、搜索和下载统一生效，黑名单优先。</p>
+
+  <!-- Access Policy -->
+  <div class="card-glass">
+    <div class="card-icon">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    </div>
+    <h2 class="card-heading">访问规则</h2>
+    <p class="card-desc">白名单与黑名单对代理统一生效，黑名单优先。部署时通过 GH Variables 注入，部署后可在 CF 变量中覆盖。</p>
     <div class="policy-grid">
-      <div class="policy-item">
-        <span>白名单</span>
+      <div class="policy-panel">
+        <span class="policy-label">白名单</span>
         <div class="chips" id="whitelistChips" aria-live="polite"></div>
       </div>
-      <div class="policy-item">
-        <span>黑名单</span>
+      <div class="policy-panel">
+        <span class="policy-label">黑名单</span>
         <div class="chips" id="blacklistChips" aria-live="polite"></div>
       </div>
     </div>
-    <div class="usage-row">
-      <span class="usage-badge">匹配方式</span>
+    <div class="policy-match">
+      <span class="match-badge">匹配方式</span>
       <code id="policyMatchMode">关键词包含匹配，区分大小写</code>
     </div>
-  </section>
+  </div>
 
-  <section class="view active" id="view-github">
-    <div class="hero">
-      <h1 class="hero-title">GitHub、Docker 与 Hugging Face 加速</h1>
-      <p class="hero-sub">在资源地址前添加本站域名，通过 Cloudflare 边缘网络流式传输。</p>
+  <!-- Usage -->
+  <div class="card-glass">
+    <div class="card-icon">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
     </div>
-    <div class="card glass">
-      <div class="card-title">快速转换加速链接</div>
-      <div class="card-desc">点击按钮读取剪贴板并转换；也可自定义输入支持的 HTTPS 地址后按回车。</div>
-      <form class="form-group" id="proxyForm" novalidate>
-        <div class="field quick-field">
-          <input type="url" class="input" id="githubLinkInput" placeholder="粘贴或输入资源链接" aria-label="上游资源地址" autocomplete="url">
-          <button class="btn btn-primary" id="pasteConvertButton" type="button">粘贴并转换</button>
-        </div>
-      </form>
-      <div class="output" id="githubOutput">
-        <div class="output-box" id="githubFormattedLink"></div>
-        <div class="output-actions">
-          <button class="btn btn-ghost btn-sm" id="copyButton">复制链接</button>
-          <button class="btn btn-ghost btn-sm" id="openButton">打开链接</button>
-        </div>
-      </div>
-    </div>
-    <div class="card glass">
-      <div class="card-title">使用说明</div>
-      <div class="card-desc">直接使用“本站域名/上游主机/资源路径”。完整 HTTPS 地址也可放在本站域名之后。</div>
-      <div id="usageExamples"></div>
-    </div>
-  </section>
-  <section class="view" id="view-search">
-    <div class="hero">
-      <h1 class="hero-title">镜像搜索</h1>
-      <p class="hero-sub">搜索 Docker Hub 公开镜像并查看可用标签。</p>
-    </div>
-    <div class="card glass">
-      <div class="field search-field">
-        <input type="text" class="input" id="searchInput" placeholder="输入镜像名称搜索...">
-        <select class="select" id="searchSort" aria-label="镜像排序">
-          <option value="relevance">相关度排序</option>
-          <option value="pulls">拉取量从高到低</option>
-          <option value="name">名称排序</option>
-        </select>
-        <button class="btn btn-primary" id="searchButton">搜索</button>
-      </div>
-    </div>
-    <div id="searchLoading" class="loading-center hidden"><div class="spinner-lg"></div><p>正在加载...</p></div>
-    <button class="back-link hidden" id="backToSearch">← 返回搜索结果</button>
-    <div id="searchResults"></div>
-    <div id="tagList"></div>
-  </section>
-  <section class="view" id="view-models">
-    <div class="hero">
-      <h1 class="hero-title">模型搜索与下载</h1>
-      <p class="hero-sub">搜索 Hugging Face 公开模型，浏览仓库文件并通过本站下载。</p>
-    </div>
-    <div class="card glass">
-      <div class="field search-field">
-        <input type="text" class="input" id="hfSearchInput" placeholder="输入模型名称搜索...">
-        <select class="select" id="hfSearchSort" aria-label="模型排序">
-          <option value="relevance">相关度排序</option>
-          <option value="downloads">下载量从高到低</option>
-          <option value="likes">点赞数从高到低</option>
-          <option value="lastModified">最近更新</option>
-        </select>
-        <button class="btn btn-primary" id="hfSearchButton" type="button">搜索</button>
-      </div>
-    </div>
-    <div id="hfLoading" class="loading-center hidden"><div class="spinner-lg"></div><p>正在加载...</p></div>
-    <button class="back-link hidden" id="backToModels" type="button">← 返回模型搜索</button>
-    <div id="hfResults"></div>
-    <div id="hfFiles"></div>
-  </section>
+    <h2 class="card-heading">使用说明</h2>
+    <p class="card-desc">使用 "本站域名/上游主机/资源路径" 格式，完整 HTTPS 地址也可拼接在本站域名之后</p>
+    <div class="example-grid" id="usageExamples"></div>
+  </div>
+
 </main>
-<div class="toast" id="toast"></div>
-<footer class="footer">
+
+<footer class="footer-glass">
   <a href="https://github.com/787a68/flarehub" target="_blank" rel="noopener">GitHub · FlareHub</a>
 </footer>
-<script src="/config.js"></script>
-<script src="/app.js"></script>
+
+<div class="toast-glass" id="toast"></div>
+
+  <script src="/config.js"></script>
+  <script src="/app.js"></script>
 </body>
 </html>
