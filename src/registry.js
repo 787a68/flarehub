@@ -127,7 +127,18 @@ function parseRegistryPath(pathname, search) {
   // Auth token endpoint: /token or /<host>/token
   if (pathname === '/token' || pathname.endsWith('/token')) {
     const hostMatch = pathname.match(/^\/([^/]+)\/token$/);
-    const host = hostMatch ? hostMatch[1] : 'registry-1.docker.io';
+    let host = hostMatch ? hostMatch[1] : 'registry-1.docker.io';
+
+    // For /token (no host prefix), check the `service` query parameter
+    // to route to the correct upstream auth endpoint.
+    if (!hostMatch) {
+      const params = new URLSearchParams(search);
+      const service = params.get('service') || '';
+      // Reverse-lookup: find the registry host whose AUTH_SERVICES matches
+      const serviceHost = Object.entries(AUTH_SERVICES).find(([, s]) => s === service);
+      if (serviceHost) host = serviceHost[0];
+    }
+
     const ep = AUTH_ENDPOINTS[host] || AUTH_ENDPOINTS['registry-1.docker.io'];
     return {
       host,
@@ -342,12 +353,18 @@ export async function proxyRegistry(request, env) {
   // Ensure Docker-Distribution-API-Version header on /v2 base endpoint
   const isV2Base = target.path === '/v2' || target.path === '/v2/';
 
-  // Handle 401: pass through the upstream www-authenticate challenge
-  // unchanged so the Docker daemon authenticates directly with the
-  // upstream auth service (e.g. auth.docker.io). This way:
-  //   - Users only need `docker login docker.io` (not `docker login aff.al`)
-  //   - Authenticated tokens carry the user's rate-limit quota (200/6h)
-  //   - The daemon sends the token back to us; we forward it to the upstream
+  // Handle 401: route authentication appropriately per registry.
+  //
+  // Docker Hub: pass through the upstream www-authenticate unchanged so the
+  //   Docker daemon authenticates directly with auth.docker.io. This way
+  //   users only need `docker login docker.io` and get their 200/6h quota.
+  //
+  // Other registries (ghcr.io, quay.io, etc.): rewrite realm to our /token
+  //   endpoint. The Docker daemon won't send credentials to a different host
+  //   than the registry it's pulling from, so we must proxy the auth request.
+  //   The daemon requests /token?service=ghcr.io&scope=... from us, we forward
+  //   to the upstream auth service and return the token.
+  //
   // If we pre-injected a cached token that turned out to be stale/invalid,
   // evict it from the cache so the next request gets a fresh token.
   if (upstreamRes.status === 401) {
@@ -358,7 +375,15 @@ export async function proxyRegistry(request, env) {
     const wwwAuth = upstreamRes.headers.get('www-authenticate');
     if (wwwAuth) {
       const headers = sanitizeHeaders(upstreamRes.headers);
-      // Keep the original www-authenticate (realm points to upstream auth)
+      // For Docker Hub: keep original realm (auth.docker.io)
+      // For other registries: rewrite realm to our /token endpoint
+      const isDockerHub = target.host === 'registry-1.docker.io';
+      if (!isDockerHub) {
+        const tokenPath = '/token';
+        const realm = `${url.origin}${tokenPath}`;
+        const rewritten = wwwAuth.replace(/realm="[^"]*"/, `realm="${realm}"`);
+        headers.set('www-authenticate', rewritten);
+      }
       headers.set('cache-control', 'no-store');
       headers.set('cdn-cache', 'no-store');
       if (isV2Base) headers.set('docker-distribution-api-version', 'registry/2.0');
