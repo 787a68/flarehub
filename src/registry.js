@@ -8,8 +8,14 @@
  * - Google Container Registry (gcr.io)
  * - Kubernetes registry (registry.k8s.io)
  *
- * Handles auth token relay via /token endpoint and rewrites
- * www-authenticate challenges to point through the proxy.
+ * Auth handling:
+ * - 401 auto-interception for anonymous requests (fetch token internally,
+ *   retry, return 200) — reduces 3 round-trips to 1
+ * - 401 passthrough for authenticated requests (preserve user's personal
+ *   rate-limit quota via `docker login`)
+ * - Token relay via /token endpoint (backward compatible)
+ * - Token caching (Cache API, 280s TTL) + pre-injection (skip 401 round-trip)
+ * - www-authenticate realm rewriting for non-Docker Hub registries
  */
 
 import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, withCors } from './http.js';
@@ -102,6 +108,34 @@ async function deleteCachedToken(host, service, scope) {
     await caches.default.delete(new Request(tokenCacheUrl(host, service, scope)));
   } catch {
     // Ignore
+  }
+}
+
+/**
+ * Fetch an auth token from the upstream auth service.
+ * Used for 401 auto-interception on anonymous requests to reduce
+ * round-trips (3 → 1) and work even when the client cannot reach
+ * the auth endpoint directly.
+ * @returns {{ token: string, expiresIn: number } | null}
+ */
+async function fetchTokenInternal(host, service, scope) {
+  const ep = AUTH_ENDPOINTS[host];
+  if (!ep) return null;
+
+  const params = new URLSearchParams();
+  if (service) params.set('service', service);
+  if (scope) params.set('scope', scope);
+
+  const tokenUrl = new URL(`${ep.path}?${params.toString()}`, ep.base);
+
+  try {
+    const res = await fetch(tokenUrl, { redirect: 'manual' });
+    if (res.status !== 200) return null;
+    const data = await res.json();
+    if (!data?.token) return null;
+    return { token: data.token, expiresIn: data.expires_in || 300 };
+  } catch {
+    return null;
   }
 }
 
@@ -226,12 +260,35 @@ function extractImageName(path) {
   return m[1];
 }
 
+/** Follow registry redirects without leaking credentials across hosts. */
+async function fetchRegistry(upstream, method, sourceHeaders, maxRedirects = 5) {
+  let currentUrl = new URL(upstream);
+  const headers = new Headers(sourceHeaders);
+
+  for (let redirects = 0; ; redirects++) {
+    const response = await fetch(new Request(currentUrl, {
+      method,
+      headers,
+      redirect: 'manual',
+    }));
+    if (response.status < 300 || response.status >= 400 || redirects >= maxRedirects) {
+      return response;
+    }
+
+    const location = response.headers.get('location');
+    if (!location) return response;
+    const nextUrl = new URL(location, currentUrl);
+    if (nextUrl.host !== currentUrl.host) headers.delete('authorization');
+    currentUrl = nextUrl;
+  }
+}
+
 /**
  * Relay the auth token request to the upstream auth service.
  * On success, cache the token for cross-request reuse to reduce
  * 401 round-trips and Docker Hub rate-limit consumption.
  */
-async function handleAuth(upstream, request, host, env) {
+async function handleAuth(upstream, request, host, ctx) {
   const reqHeaders = sanitizeRequestHeaders(request.headers);
 
   // Check if the client provided credentials (e.g. docker login to docker.io
@@ -239,15 +296,6 @@ async function handleAuth(upstream, request, host, env) {
   // NOT be cached — otherwise one user's authenticated token could leak
   // to anonymous users.
   const hasClientAuth = reqHeaders.has('authorization');
-
-  // Optionally inject a global PAT to upgrade anonymous rate limits.
-  // Only inject when the client didn't provide their own credentials.
-  let injectedPAT = false;
-  if (!hasClientAuth && env?.DOCKER_HUB_PAT && env?.DOCKER_HUB_USER) {
-    const cred = btoa(`${env.DOCKER_HUB_USER}:${env.DOCKER_HUB_PAT}`);
-    reqHeaders.set('authorization', `Basic ${cred}`);
-    injectedPAT = true;
-  }
 
   const req = new Request(upstream, {
     method: request.method,
@@ -259,12 +307,12 @@ async function handleAuth(upstream, request, host, env) {
   try {
     res = await fetch(req);
   } catch (err) {
-    return errorResponse(502, `Auth relay failed: ${err.message}`);
+    console.error('Registry auth relay failed', err);
+    return errorResponse(502, 'Registry auth relay failed');
   }
 
-  // Only cache anonymous tokens (no client credentials, no injected PAT).
   // Authenticated tokens are per-user and must not be shared.
-  const cacheable = !hasClientAuth && !injectedPAT;
+  const cacheable = !hasClientAuth;
   if (res.status === 200 && cacheable) {
     try {
       const cloned = res.clone();
@@ -272,7 +320,8 @@ async function handleAuth(upstream, request, host, env) {
       if (data?.token) {
         const service = upstream.searchParams.get('service') || AUTH_SERVICES[host] || host;
         const scope = upstream.searchParams.get('scope') || '';
-        await setCachedToken(host, service, scope, data.token, data.expires_in);
+        const cacheWrite = setCachedToken(host, service, scope, data.token, data.expires_in);
+        if (ctx) ctx.waitUntil(cacheWrite);
       }
     } catch {
       // Token parse failed — proceed without caching
@@ -281,7 +330,7 @@ async function handleAuth(upstream, request, host, env) {
 
   const headers = sanitizeHeaders(res.headers);
   headers.set('cache-control', 'no-store');
-  headers.set('cdn-cache', 'no-store');
+  headers.set('cdn-cache-control', 'no-store');
   withCors(headers);
   return new Response(res.body, {
     status: res.status,
@@ -297,7 +346,7 @@ async function handleAuth(upstream, request, host, env) {
  * @param {object} env
  * @returns {Promise<Response>}
  */
-export async function proxyRegistry(request, env) {
+export async function proxyRegistry(request, env, ctx) {
   const url = new URL(request.url);
 
   if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -311,7 +360,7 @@ export async function proxyRegistry(request, env) {
 
   // Auth token relay
   if (target.isAuth) {
-    return handleAuth(target.upstream, request, target.host, env);
+    return handleAuth(target.upstream, request, target.host, ctx);
   }
 
   // Access control: check image name
@@ -328,7 +377,10 @@ export async function proxyRegistry(request, env) {
   // Otherwise, check the Cache API for a previously obtained token
   // scoped to this registry + repository.
   const reqHeaders = sanitizeRequestHeaders(request.headers);
-  if (!reqHeaders.has('authorization')) {
+  // Track whether the client provided its own credentials (vs our pre-injected token).
+  // This determines 401 handling: client auth → passthrough, no auth → auto-intercept.
+  const hasClientAuth = reqHeaders.has('authorization');
+  if (!hasClientAuth) {
     const service = AUTH_SERVICES[target.host] || target.host;
     const scope = getScopeForPath(target.path);
     const cachedToken = await getCachedToken(target.host, service, scope);
@@ -337,102 +389,98 @@ export async function proxyRegistry(request, env) {
     }
   }
 
-  // Fetch upstream
-  const upstreamReq = new Request(target.upstream, {
-    method: request.method,
-    headers: reqHeaders,
-    redirect: 'manual',
-  });
-
   let upstreamRes;
   try {
-    upstreamRes = await fetch(upstreamReq);
+    upstreamRes = await fetchRegistry(target.upstream, request.method, reqHeaders);
   } catch (err) {
-    return errorResponse(502, `Registry fetch failed: ${err.message}`);
-  }
-
-  // Follow upstream redirects for registry requests.
-  // Some registries (k8s.io, Quay CDN) redirect manifests and blobs to
-  // regional backends or CDNs. Docker daemon does not follow external
-  // redirects, so we fetch and return the content ourselves.
-  // Strip the Authorization header when redirecting to a different host
-  // to avoid leaking registry credentials to third-party CDNs.
-  let redirectCount = 0;
-  while (upstreamRes.status >= 300 && upstreamRes.status < 400 && redirectCount < 5) {
-    const location = upstreamRes.headers.get('location');
-    if (!location) break;
-    redirectCount++;
-    try {
-      const redirectUrl = new URL(location, target.upstream);
-      const redirectReq = new Request(redirectUrl, {
-        method: request.method,
-        headers: reqHeaders,
-        redirect: 'manual',
-      });
-      // Don't send registry credentials to a different host (e.g. CDN)
-      if (redirectUrl.host !== target.upstream.host) {
-        redirectReq.headers.delete('authorization');
-      }
-      upstreamRes = await fetch(redirectReq);
-    } catch (err) {
-      return errorResponse(502, `Registry redirect fetch failed: ${err.message}`);
-    }
+    console.error('Registry fetch failed', err);
+    return errorResponse(502, 'Registry fetch failed');
   }
 
   // Ensure Docker-Distribution-API-Version header on /v2 base endpoint
   const isV2Base = target.path === '/v2' || target.path === '/v2/';
 
-  // Handle 401: route authentication appropriately per registry.
+  // Handle 401: auto-intercept for anonymous requests, passthrough for authenticated.
   //
-  // Docker Hub: pass through the upstream www-authenticate unchanged so the
-  //   Docker daemon authenticates directly with auth.docker.io. This way
-  //   users only need `docker login docker.io` and get their 200/6h quota.
+  // Anonymous requests: intercept the 401, fetch a token from the upstream
+  //   auth service internally, cache it, retry the request with the token,
+  //   and return the result. This reduces 3 round-trips (401 → token → retry)
+  //   to 1 client request, and works even when the client cannot reach the
+  //   auth endpoint directly.
   //
-  // Other registries (ghcr.io, quay.io, etc.): rewrite realm to our /token
-  //   endpoint. The Docker daemon won't send credentials to a different host
-  //   than the registry it's pulling from, so we must proxy the auth request.
-  //   The daemon requests /token?service=ghcr.io&scope=... from us, we forward
-  //   to the upstream auth service and return the token.
+  // Authenticated requests (client has Authorization): pass through the 401
+  //   so the Docker daemon re-authenticates with its own credentials.
+  //   For Docker Hub: keep original realm (auth.docker.io) so users get their
+  //   personal 200/6h quota via `docker login docker.io`.
+  //   For other registries: rewrite realm to our /token endpoint.
   //
   // If we pre-injected a cached token that turned out to be stale/invalid,
   // evict it from the cache so the next request gets a fresh token.
   if (upstreamRes.status === 401) {
     const service = AUTH_SERVICES[target.host] || target.host;
     const scope = getScopeForPath(target.path);
+
+    // Evict stale cached token
     await deleteCachedToken(target.host, service, scope);
 
-    const wwwAuth = upstreamRes.headers.get('www-authenticate');
-    if (wwwAuth) {
-      const headers = sanitizeHeaders(upstreamRes.headers);
-      // For Docker Hub: keep original realm (auth.docker.io)
-      // For other registries: rewrite realm to our /token endpoint
-      const isDockerHub = target.host === 'registry-1.docker.io';
-      if (!isDockerHub) {
-        const tokenPath = '/token';
-        const realm = `${url.origin}${tokenPath}`;
-        const rewritten = wwwAuth.replace(/realm="[^"]*"/, `realm="${realm}"`);
-        headers.set('www-authenticate', rewritten);
+    // Auto-intercept 401 for anonymous requests: fetch token internally,
+    // retry, and return the result to the client.
+    if (!hasClientAuth) {
+      const tokenResult = await fetchTokenInternal(target.host, service, scope);
+      if (tokenResult) {
+        const cacheWrite = setCachedToken(
+          target.host,
+          service,
+          scope,
+          tokenResult.token,
+          tokenResult.expiresIn,
+        );
+        if (ctx) ctx.waitUntil(cacheWrite);
+        reqHeaders.set('authorization', `Bearer ${tokenResult.token}`);
+        try {
+          upstreamRes = await fetchRegistry(target.upstream, request.method, reqHeaders);
+        } catch (err) {
+          console.error('Registry retry after auth failed', err);
+          return errorResponse(502, 'Registry retry after auth failed');
+        }
       }
-      headers.set('cache-control', 'no-store');
-      headers.set('cdn-cache', 'no-store');
-      if (isV2Base) headers.set('docker-distribution-api-version', 'registry/2.0');
-      withCors(headers);
-      return new Response(upstreamRes.body, {
-        status: 401,
-        statusText: upstreamRes.statusText,
-        headers,
-      });
+    }
+
+    // If still 401 after auto-interception attempt (or authenticated request),
+    // pass through the 401 with appropriate www-authenticate.
+    if (upstreamRes.status === 401) {
+      const wwwAuth = upstreamRes.headers.get('www-authenticate');
+      if (wwwAuth) {
+        const headers = sanitizeHeaders(upstreamRes.headers);
+        const isDockerHub = target.host === 'registry-1.docker.io';
+        if (!isDockerHub) {
+          const realm = `${url.origin}/token`;
+          headers.set('www-authenticate', wwwAuth.replace(/realm="[^"]*"/, `realm="${realm}"`));
+        }
+        headers.set('cache-control', 'no-store');
+        headers.set('cdn-cache-control', 'no-store');
+        if (isV2Base) headers.set('docker-distribution-api-version', 'registry/2.0');
+        withCors(headers);
+        return new Response(upstreamRes.body, {
+          status: 401,
+          statusText: upstreamRes.statusText,
+          headers,
+        });
+      }
     }
   }
 
   // Build response
   const headers = sanitizeHeaders(upstreamRes.headers);
   withCors(headers);
+  // Strip Location header to prevent clients from bypassing the proxy
+  // by following upstream CDN/redirect URLs directly.
+  headers.delete('location');
 
   // Don't cache error responses (4xx/5xx) — they're transient
   if (upstreamRes.status >= 400) {
     headers.set('cache-control', 'no-store');
-    headers.set('cdn-cache', 'no-store');
+    headers.set('cdn-cache-control', 'no-store');
     if (isV2Base) headers.set('docker-distribution-api-version', 'registry/2.0');
     const body = request.method === 'HEAD' ? null : upstreamRes.body;
     return new Response(body, {
@@ -442,13 +490,17 @@ export async function proxyRegistry(request, env) {
     });
   }
 
-  // Cache blob layers (immutable content-addressed)
-  if (target.path.includes('/blobs/')) {
+  // Only anonymous responses may be shared. Blob digests are immutable;
+  // tags and manifests can move and therefore receive a short TTL.
+  if (hasClientAuth) {
+    headers.set('cache-control', 'private, no-store');
+    headers.set('cdn-cache-control', 'no-store');
+  } else if (target.path.includes('/blobs/')) {
     headers.set('cache-control', 'public, max-age=86400, immutable');
-    headers.set('cdn-cache', 'public, max-age=86400');
+    headers.set('cdn-cache-control', 'public, max-age=86400');
   } else {
     headers.set('cache-control', 'public, max-age=300');
-    headers.set('cdn-cache', 'public, max-age=300');
+    headers.set('cdn-cache-control', 'public, max-age=300');
   }
   if (isV2Base) headers.set('docker-distribution-api-version', 'registry/2.0');
 
@@ -459,7 +511,3 @@ export async function proxyRegistry(request, env) {
     headers,
   });
 }
-
-
-
-

@@ -23,6 +23,7 @@
     'cdn-lfs.hf.co',
     'cdn-lfs-us-1.hf.co',
     'download.docker.com',
+    'gitlab.com',
     'ghcr.io',
     'quay.io',
     'gcr.io',
@@ -39,6 +40,8 @@
     { label: 'Docker Hub', cmd: 'docker pull your-domain.com/nginx' },
     { label: 'GHCR', cmd: 'docker pull your-domain.com/ghcr.io/user/image' },
     { label: 'Docker Binary', url: 'https://download.docker.com/linux/static/stable/x86_64/docker.tgz' },
+    { label: 'GitLab Raw', url: 'https://gitlab.com/user/repo/-/raw/main/README.md' },
+    { label: 'GitLab Archive', url: 'https://gitlab.com/user/repo/-/archive/main/repo.tar.gz' },
   ];
 
   /**
@@ -60,24 +63,16 @@
     }
   }
 
-  /**
-   * Escape HTML special characters.
-   */
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
-  }
+  var toastTimer;
 
-  /**
-   * Show a toast message.
-   */
+  /** Show a toast message. */
   function showToast(msg) {
     var toast = document.getElementById('toast');
     if (!toast) return;
+    window.clearTimeout(toastTimer);
     toast.textContent = msg;
     toast.classList.add('show');
-    setTimeout(function () { toast.classList.remove('show'); }, 2000);
+    toastTimer = window.setTimeout(function () { toast.classList.remove('show'); }, 2000);
   }
 
   /**
@@ -190,7 +185,7 @@
     // Download button
     if (downloadBtn) {
       downloadBtn.addEventListener('click', function () {
-        if (currentUrl) window.open(currentUrl, '_blank');
+        if (currentUrl) window.open(currentUrl, '_blank', 'noopener,noreferrer');
       });
     }
 
@@ -219,13 +214,16 @@
   }
 
   function renderChips(el, items) {
-    if (!items || items.length === 0) {
-      el.innerHTML = '<code class="muted">无</code>';
-      return;
-    }
-    el.innerHTML = items.map(function (item) {
-      return '<code>' + escapeHtml(item) + '</code>';
-    }).join('');
+    var fragment = document.createDocumentFragment();
+    var values = items && items.length ? items : ['无'];
+
+    values.forEach(function (item) {
+      var code = document.createElement('code');
+      code.textContent = item;
+      if (!items || !items.length) code.className = 'muted';
+      fragment.appendChild(code);
+    });
+    el.replaceChildren(fragment);
   }
 
   /**
@@ -236,23 +234,26 @@
     if (!container) return;
 
     var origin = window.location.origin;
-    var html = EXAMPLES.map(function (ex) {
+    var fragment = document.createDocumentFragment();
+
+    EXAMPLES.forEach(function (ex) {
+      var example = document.createElement('div');
+      var label = document.createElement('strong');
+      var value = document.createElement('code');
+
+      example.className = 'example';
+      label.textContent = ex.label;
       if (ex.url) {
         var u = new URL(ex.url);
-        var proxied = origin + '/' + u.hostname + u.pathname + u.search;
-        return '<div class="example">' +
-          '<strong>' + escapeHtml(ex.label) + '</strong>' +
-          '<code>' + escapeHtml(proxied) + '</code>' +
-          '</div>';
+        value.textContent = origin + '/' + u.hostname + u.pathname + u.search;
       } else {
-        var cmd = ex.cmd.replace('your-domain.com', origin.replace(/^https?:\/\//, ''));
-        return '<div class="example">' +
-          '<strong>' + escapeHtml(ex.label) + '</strong>' +
-          '<code>' + escapeHtml(cmd) + '</code>' +
-          '</div>';
+        value.textContent = ex.cmd.replace('your-domain.com', window.location.host);
       }
-    }).join('');
 
-    container.innerHTML = html;
+      example.append(label, value);
+      fragment.appendChild(example);
+    });
+
+    container.replaceChildren(fragment);
   }
 })();

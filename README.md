@@ -1,18 +1,26 @@
 # FlareHub
 
-运行在 Cloudflare Workers 上的边缘加速代理，为 GitHub、Docker Registry 与 Hugging Face 提供全球边缘网络流式传输加速。无需服务器、无需数据库，部署后即可使用。
+运行在 Cloudflare Workers 上的边缘加速代理，为 GitHub、GitLab、Docker Registry 与 Hugging Face 提供全球边缘网络流式传输加速。无需服务器、无需数据库，部署后即可使用。
+
+<p align="center">
+  <img src="docs/images/flarehub-ui.png" alt="FlareHub Liquid Glass 前端界面" width="760">
+</p>
 
 ## 功能特性
 
 - **GitHub 加速**：Release 下载、Archive 打包、Raw 文件、Codeload、API、Gist、静态资源
+- **GitLab 加速**：Raw 文件、Archive 打包、Release 下载、API
 - **Docker Registry 代理**：支持 `docker pull` 直接拉取，兼容 Docker Hub、GHCR、Quay、GCR、registry.k8s.io
-  - 令牌中继：通过 `/token` 端点转发认证请求，Cache API 缓存匿名令牌（280s TTL）减少 401 往返
-  - Docker Hub 透传：保留原始 `auth.docker.io` 认证域，用户 `docker login docker.io` 即可享受个人配额
+  - 401 自动拦截（匿名）：Worker 内部获取 token 并重试，将 3 次往返（401 → token → retry）压缩为 1 次客户端请求
+  - 401 透传（认证）：保留原始 `auth.docker.io` 认证域，用户 `docker login docker.io` 即可享受个人 200/6h 配额
+  - 令牌中继：通过 `/token` 端点转发认证请求，Cache API 缓存匿名令牌（280s TTL）以减少 401 往返
   - 其他注册表：重写 `www-authenticate` realm 至代理 `/token`，由 Worker 转发上游认证
   - 重定向跟随：自动跟随上游 302（最多 5 跳），跨域时剥离 `Authorization` 头防止凭证泄露
-  - 可选 PAT 注入：配置 `DOCKER_HUB_USER` / `DOCKER_HUB_PAT` 提升匿名速率限制
+  - Location 头剥离：删除响应中的 `Location` 头，防止客户端绕过代理直连上游 CDN
 - **Hugging Face 加速**：resolve、blob、raw 文件及 CDN LFS 大文件
-- **访问控制**：基于关键词的白名单 / 黑名单，黑名单优先
+- **访问控制**：基于关键词的白名单 / 黑名单，黑名单优先；支持 GitHub API、GitLab 子组与 Hugging Face 仓库路径
+- **安全缓存**：匿名静态资源与镜像分层缓存，携带认证、Cookie 或 `Set-Cookie` 的响应禁止进入共享缓存
+- **Liquid Glass 面板**：静态光学色层、半透明折射、高光边框与适度模糊，无持续背景动画，兼顾质感、移动端功耗和无障碍体验
 - **速率限制**：基于 Cloudflare Rate Limiter 的全局 IP 级请求限流（仅限代理请求，不含 CORS 预检与静态资源）
 - **前端面板**：内置玻璃拟态 UI，提供链接转换器、访问规则展示与使用示例
 - **CI/CD**：GitHub Actions 自动部署到 Cloudflare Workers，支持上游同步
@@ -25,6 +33,7 @@
 | Docker Registry | `registry-1.docker.io`、`ghcr.io`、`quay.io`、`gcr.io`、`registry.k8s.io` |
 | Docker 二进制 | `download.docker.com` |
 | Hugging Face | `huggingface.co`、`cdn-lfs.hf.co`、`cdn-lfs-us-1.hf.co` |
+| GitLab | `gitlab.com` |
 
 ## 使用方法
 
@@ -55,7 +64,19 @@ https://flarehub.example.com/https://github.com/user/repo
 | API | `https://flarehub.example.com/api.github.com/repos/user/repo/releases` |
 | 静态资源 | `https://flarehub.example.com/github.githubassets.com/assets/123.js` |
 
-> 注意：GitHub、Hugging Face、Gist 的网页（HTML）不会被代理，仅代理文件、归档和 API 数据。
+> 注意：GitHub、GitLab、Hugging Face、Gist 的网页（HTML）不会被代理，仅代理文件、归档和 API 数据。
+
+### GitLab 加速
+
+| 场景 | 加速链接 |
+|------|----------|
+| Raw 文件 | `https://flarehub.example.com/gitlab.com/user/repo/-/raw/main/README.md` |
+| Blob（自动转 Raw） | `https://flarehub.example.com/gitlab.com/user/repo/-/blob/main/README.md` |
+| Archive 打包 | `https://flarehub.example.com/gitlab.com/user/repo/-/archive/main/repo.tar.gz` |
+| Release 下载 | `https://flarehub.example.com/gitlab.com/user/repo/-/releases/v1.0/downloads/file.zip` |
+| API | `https://flarehub.example.com/gitlab.com/api/v4/projects` |
+
+> GitLab 支持子组（subgroup）路径，如 `gitlab.com/group/subgroup/repo/-/raw/main/file`。
 
 ### Docker Registry 加速
 
@@ -95,7 +116,7 @@ docker pull flarehub.example.com/registry.k8s.io/pause:3.9
 sudo systemctl restart docker
 ```
 
-> Docker Hub 认证透传：由于 Docker Hub 的 `www-authenticate` 保持原始 `auth.docker.io` 域，用户可通过 `docker login docker.io` 登录并享受个人 200 次 / 6 小时配额。其他注册表（GHCR、Quay 等）的认证由代理 `/token` 端点中继，无需额外登录。
+> Docker Hub 认证透传：由于 Docker Hub 的 `www-authenticate` 保持原始 `auth.docker.io` 域，用户可通过 `docker login docker.io` 登录并享受个人 200 次 / 6 小时配额。其他注册表（GHCR、Quay 等）的认证由代理 `/token` 端点中继，无需额外登录。匿名请求时，Worker 会自动拦截 401 并在内部获取 token 重试，减少客户端往返次数。
 
 ### Hugging Face 加速
 
@@ -145,7 +166,6 @@ cd flarehub
 |-------------|----|
 | `CF_API_TOKEN` | 上一步创建的 Cloudflare API Token |
 | `CF_ACCOUNT_ID` | 你的 Cloudflare Account ID |
-| `DOCKER_HUB_PAT` | Docker Hub 访问令牌，用于匿名速率限制提升（可选） |
 
 #### 4. 配置 GitHub Variables（可选）
 
@@ -158,7 +178,6 @@ cd flarehub
 | `BLACKLIST` | 黑名单关键词，逗号分隔 | 空 |
 | `CASE_INSENSITIVE` | 关键词匹配是否忽略大小写 | `false` |
 | `RATE_LIMITER` | 每分钟请求限制数（正整数） | `120` |
-| `DOCKER_HUB_USER` | Docker Hub 用户名，配合 `DOCKER_HUB_PAT` 提升匿名速率限制 | 空 |
 
 示例：
 
@@ -167,7 +186,6 @@ WHITELIST = my-org, my-repo
 BLACKLIST = private, internal
 CASE_INSENSITIVE = true
 RATE_LIMITER = 60
-DOCKER_HUB_USER = myuser
 ```
 
 #### 5. 触发部署
@@ -175,10 +193,10 @@ DOCKER_HUB_USER = myuser
 推送到 `main` 分支即可自动部署，或在 GitHub 仓库 → **Actions** → **Deploy to Cloudflare Workers** 手动触发（`workflow_dispatch`）。
 
 部署流程：
-1. 检出代码并安装依赖
+1. 使用最新 Node.js 执行 `npm install`，每次部署重新解析依赖版本
 2. 运行 `npm run check` 语法检查
-3. 执行 `scripts/prepare-deploy.mjs` 生成部署配置（注入环境变量）
-4. 调用 `wrangler deploy` 部署到 Cloudflare Workers
+3. 执行 `scripts/prepare-deploy.mjs` 生成部署配置，并将 `compatibility_date` 动态设为 UTC 当天日期
+4. 使用 `wrangler@latest` 部署到 Cloudflare Workers
 
 
 ## 配置说明
@@ -196,7 +214,6 @@ DOCKER_HUB_USER = myuser
 | `ratelimits` | Rate Limiter 绑定，`namespace_id` 为限流命名空间，默认 120 次 / 60 秒 |
 | `vars` | 环境变量默认值，可被 Cloudflare Dashboard / GitHub Variables 覆盖 |
 | `placement.mode` | `smart` 表示由 Cloudflare 自动选择最优数据中心 |
-| `observability` | 启用日志与可观测性 |
 
 ### 环境变量
 
@@ -207,15 +224,13 @@ DOCKER_HUB_USER = myuser
 | `WHITELIST` | 仅允许匹配关键词的资源访问，逗号分隔 | Variable | `my-org, my-repo` |
 | `BLACKLIST` | 拒绝匹配关键词的资源访问，黑名单优先 | Variable | `private, internal` |
 | `CASE_INSENSITIVE` | 关键词匹配是否忽略大小写 | Variable | `true` / `false` |
-| `DOCKER_HUB_USER` | Docker Hub 用户名，配合 PAT 提升匿名速率限制 | Variable | `myuser` |
-| `DOCKER_HUB_PAT` | Docker Hub 访问令牌，仅在客户端未提供凭证时注入 | Secret | `dckr_pat_xxx` |
 
 > `RATE_LIMITER` 不是环境变量，而是 GitHub Variable，用于在部署时设置 Rate Limiter 绑定的请求阈值（每 60 秒每 IP 最大请求数）。
 
-> `DOCKER_HUB_USER` / `DOCKER_HUB_PAT` 为可选配置。设置后，当客户端未携带认证凭证时，代理会自动注入 Basic 认证以提升 Docker Hub 速率限制。已认证的客户端令牌不会被缓存，避免用户间凭证泄露。
-
 访问规则匹配逻辑：
-- 对 GitHub 代理，匹配对象为 `owner/repo`
+- 对 GitHub 仓库、GitHub API 与 Gist，匹配对象优先为 `owner/repo`
+- 对 GitLab 文件代理，匹配完整项目路径，包含任意层级子组
+- 对 Hugging Face 模型、Dataset 与 Space，匹配对象为 `owner/repo`
 - 对 Docker Registry 代理，匹配对象为镜像仓库名
 - 关键词为**包含匹配**：目标字符串包含关键词即命中
 - 黑名单优先于白名单：命中黑名单则拒绝，无论白名单如何设置
@@ -231,7 +246,7 @@ DOCKER_HUB_USER = myuser
 flarehub/
 ├── src/
 │   ├── worker.js          # Worker 入口，路由分发
-│   ├── github.js          # GitHub / HuggingFace / Docker 二进制代理
+│   ├── github.js          # GitHub / GitLab / HuggingFace / Docker 二进制代理
 │   ├── registry.js        # Docker Registry v2 代理与令牌转发
 │   ├── access.js          # 白名单 / 黑名单访问控制
 │   └── http.js            # HTTP 工具：CORS、错误、头清理、缓存
@@ -261,7 +276,7 @@ flarehub/
 
 ### 如何限制只代理特定仓库？
 
-设置 `WHITELIST` 变量，匹配对象为 `owner/repo`（GitHub）或镜像名（Docker），关键词为**包含匹配**：
+设置 `WHITELIST` 变量，匹配对象为 `owner/repo`（GitHub / GitLab）或镜像名（Docker），关键词为**包含匹配**：
 
 ```
 WHITELIST = my-org/my-repo, another-org
@@ -273,7 +288,7 @@ WHITELIST = my-org/my-repo, another-org
 
 ### 如何按关键词屏蔽资源？
 
-设置 `BLACKLIST` 变量，匹配对象为 `owner/repo`（GitHub）或镜像名（Docker），关键词为**包含匹配**：
+设置 `BLACKLIST` 变量，匹配对象为 `owner/repo`（GitHub / GitLab）或镜像名（Docker），关键词为**包含匹配**：
 
 ```
 BLACKLIST = private, internal
@@ -290,13 +305,6 @@ BLACKLIST = private, internal
 ### 如何关闭前端面板只保留代理功能？
 
 设置 GitHub Variable `DEPLOY_FRONTEND=false`，部署脚本会移除 `assets` 配置，仅部署 Worker。
-
-### 如何提升 Docker Hub 速率限制？
-
-两种方式：
-
-1. **个人认证**：Docker Hub 的 `www-authenticate` 保持原始 `auth.docker.io` 域，用户通过 `docker login docker.io` 登录后即可享受个人 200 次 / 6 小时配额，令牌不经过代理缓存。
-2. **全局 PAT 注入**：在 Cloudflare Dashboard 中设置环境变量 `DOCKER_HUB_USER` 和 `DOCKER_HUB_PAT`，代理会在匿名请求时自动注入 Basic 认证，提升速率限制。注入的令牌不会被缓存。
 
 ## 许可证
 

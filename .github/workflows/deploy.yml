@@ -25,16 +25,14 @@ jobs:
         with:
           ref: main
 
-      - name: Setup latest Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: latest
-          check-latest: true
+          node-version: 22
+          cache: npm
 
-      - name: Install latest dependencies and Wrangler
-        run: |
-          npm install --package-lock=false
-          npm install --package-lock=false --no-save wrangler@latest
+      - name: Install dependencies
+        run: npm ci
 
       - name: Check configuration
         env:
@@ -56,12 +54,10 @@ jobs:
           BLACKLIST: ${{ vars.BLACKLIST }}
           CASE_INSENSITIVE: ${{ vars.CASE_INSENSITIVE }}
           RATE_LIMITER: ${{ vars.RATE_LIMITER }}
-          DOCKER_HUB_USER: ${{ vars.DOCKER_HUB_USER }}
-          DOCKER_HUB_PAT: ${{ secrets.DOCKER_HUB_PAT }}
         run: node scripts/prepare-deploy.mjs
 
       - name: Deploy Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-        run: npx --no-install wrangler deploy --config .wrangler/deploy.jsonc
+        run: npx --yes wrangler@latest deploy --config .wrangler/deploy.jsonc

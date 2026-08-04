@@ -27,6 +27,7 @@
       "/cdn-lfs.hf.co/*",
       "/cdn-lfs-us-1.hf.co/*",
       "/download.docker.com/*",
+      "/gitlab.com/*",
       "/https:///*", "/https%3A/*", "/https%3a/*"
     ]
   },
@@ -47,8 +48,5 @@
   },
   "placement": {
     "mode": "smart"
-  },
-  "observability": {
-    "enabled": true
   }
 }

@@ -122,27 +122,27 @@ export function sanitizeHeaders(headers) {
  * Build cache-control directives for proxied responses.
  * Static assets get long cache; everything else gets short edge cache.
  */
-export function cacheHeaders(url, existing) {
+export function cacheHeaders(url, existing, authenticated = false) {
   const cache = new Headers();
   const cc = existing?.get('cache-control') || '';
 
-  // Preserve explicit no-store / no-cache from upstream
-  if (/no-store|no-cache/i.test(cc)) {
-    cache.set('cache-control', 'no-store');
-    cache.set('cdn-cache', 'no-store');
+  // Never share authenticated or explicitly private responses.
+  if (authenticated || /no-store|no-cache|private/i.test(cc) || existing?.has('set-cookie')) {
+    cache.set('cache-control', 'private, no-store');
+    cache.set('cdn-cache-control', 'no-store');
     return cache;
   }
 
-  // Long-lived static assets: releases, archives, codeload, raw, CDN
+  // Long-lived static assets: releases, archives, codeload, raw, CDN.
   if (isStaticAsset(url.pathname) || CDN_HOSTS.has(url.hostname)) {
     cache.set('cache-control', 'public, max-age=86400, immutable');
-    cache.set('cdn-cache', 'public, max-age=86400');
+    cache.set('cdn-cache-control', 'public, max-age=86400');
     return cache;
   }
 
-  // Default: short edge cache, revalidate with origin
-  cache.set('cache-control', 'public, max-age=300, s-maxage=300');
-  cache.set('cdn-cache', 'public, max-age=300');
+  // Default: short browser and edge cache.
+  cache.set('cache-control', 'public, max-age=300');
+  cache.set('cdn-cache-control', 'public, max-age=300');
   return cache;
 }
 

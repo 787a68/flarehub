@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="description" content="运行在 Cloudflare Workers 上的 GitHub、Docker 与 Hugging Face 边缘代理">
+<meta name="description" content="运行在 Cloudflare Workers 上的多平台边缘资源代理">
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<title>FlareHub · GitHub、Docker 与 Hugging Face 加速</title>
+<title>FlareHub · 边缘资源加速</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -31,7 +31,7 @@
 
   <!-- Hero -->
   <section class="hero-glass">
-    <h1 class="hero-title">GitHub · Docker · Hugging Face<br>边缘加速</h1>
+    <h1 class="hero-title">边缘资源加速</h1>
     <p class="hero-sub">在资源地址前添加本站域名，通过全球边缘网络流式传输，高速访问。</p>
   </section>
 
@@ -41,22 +41,22 @@
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
     </div>
     <h2 class="card-heading">快速转换加速链接</h2>
-    <p class="card-desc">支持 GitHub、Docker 官方下载及 Hugging Face 资源地址</p>
+    <p class="card-desc">支持 GitHub、GitLab、Docker 官方下载及 Hugging Face 资源地址</p>
     <form id="proxyForm" novalidate>
       <div class="input-glass-wrap">
         <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-        <input type="url" class="input-glass" id="githubLinkInput" placeholder="粘贴或输入资源链接，按回车转换。例如 https://github.com/787a68/flarehub" aria-label="上游资源地址" autocomplete="url">
+        <input type="url" class="input-glass" id="githubLinkInput" placeholder="粘贴或输入资源链接，按回车转换。例如 https://github.com/787a68/flarehub" aria-label="上游资源地址" autocomplete="url" inputmode="url" spellcheck="false">
         <button class="btn-glass btn-primary" id="pasteConvertButton" type="button">粘贴并转换</button>
       </div>
     </form>
     <div class="output-area hidden" id="githubOutput">
       <div class="output-glass" id="githubFormattedLink"></div>
       <div class="output-row">
-        <button class="btn-glass btn-ghost" id="copyButton">
+        <button class="btn-glass btn-ghost" id="copyButton" type="button">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           复制链接
         </button>
-        <button class="btn-glass btn-ghost" id="downloadButton">
+        <button class="btn-glass btn-ghost" id="downloadButton" type="button">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           立即下载
         </button>
@@ -103,7 +103,7 @@
   <a href="https://github.com/787a68/flarehub" target="_blank" rel="noopener">GitHub · FlareHub</a>
 </footer>
 
-<div class="toast-glass" id="toast"></div>
+<div class="toast-glass" id="toast" role="status" aria-live="polite"></div>
 
   <!--FLAREHUB_CONFIG-->
   <script src="/app.js"></script>

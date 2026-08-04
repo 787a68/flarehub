@@ -52,12 +52,6 @@ config.vars.WHITELIST = env("WHITELIST");
 config.vars.BLACKLIST = env("BLACKLIST");
 config.vars.CASE_INSENSITIVE = env("CASE_INSENSITIVE") || "false";
 
-// Inject optional Docker Hub credentials for anonymous rate-limit upgrade
-const dockerUser = env("DOCKER_HUB_USER");
-const dockerPAT = env("DOCKER_HUB_PAT");
-if (dockerUser) config.vars.DOCKER_HUB_USER = dockerUser;
-if (dockerPAT) config.vars.DOCKER_HUB_PAT = dockerPAT;
-
 // Inline config into index.html so the frontend panel needs zero Worker calls
 if (config.assets) {
   const parseList = (v) => (v || "").split(",").map(s => s.trim()).filter(Boolean);
@@ -65,6 +59,9 @@ if (config.assets) {
     whitelist: parseList(config.vars.WHITELIST),
     blacklist: parseList(config.vars.BLACKLIST),
     caseInsensitive: config.vars.CASE_INSENSITIVE === "true",
+  }).replace(/[<\u2028\u2029]/g, (char) => {
+    if (char === "<") return "\\u003c";
+    return char === "\u2028" ? "\\u2028" : "\\u2029";
   });
   // Copy public/ → .wrangler/public/ as the assets directory
   const publicDir = new URL("../public/", import.meta.url);

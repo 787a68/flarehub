@@ -3,6 +3,7 @@
  *
  * Handles proxying for:
  * - GitHub: releases, archives, codeload, raw, gist, API, static assets
+ * - GitLab: raw, archives, releases, API
  * - Hugging Face: resolve, blob, raw, CDN LFS
  * - Docker binary: download.docker.com
  */
@@ -28,21 +29,52 @@ const HOSTS = {
   'cdn-lfs-us-1.hf.co': 'https://cdn-lfs-us-1.hf.co',
   // Docker binary
   'download.docker.com': 'https://download.docker.com',
+  // GitLab
+  'gitlab.com': 'https://gitlab.com',
 };
 
 /** Hosts that serve HTML pages (not proxied as-is). */
-const HTML_HOSTS = new Set(['github.com', 'huggingface.co', 'gist.github.com']);
+const HTML_HOSTS = new Set(['github.com', 'huggingface.co', 'gist.github.com', 'gitlab.com']);
 
 /** GitHub blob path pattern: /owner/repo/blob/branch/path → raw. */
 const BLOB_RE = /^\/([^/]+)\/([^/]+)\/blob\/(.+)$/;
 
-/**
- * Extract owner/repo from a GitHub-style path for access control.
- * Returns null if the path doesn't match the expected pattern.
- */
-function extractOwnerRepo(pathname) {
-  const m = pathname.match(/^\/([^/]+)\/([^/]+)\//);
-  return m ? `${m[1]}/${m[2]}` : null;
+/** GitLab blob path pattern: /-/blob/ → /-/raw/ (handles subgroups). */
+const GITLAB_BLOB_RE = /\/-\/blob\//;
+
+/** Build a stable access-control identifier for each upstream path shape. */
+function accessTarget(host, pathname) {
+  if (host === 'api.github.com') {
+    const match = pathname.match(/^\/repos\/([^/]+)\/([^/]+)(?:\/|$)/);
+    return match ? `${match[1]}/${match[2]}` : pathname;
+  }
+
+  if (host === 'gitlab.com') {
+    const projectEnd = pathname.indexOf('/-/');
+    if (projectEnd > 1) return pathname.slice(1, projectEnd);
+    return pathname;
+  }
+
+  if (host === 'huggingface.co') {
+    const parts = pathname.split('/').filter(Boolean);
+    const offset = parts[0] === 'datasets' || parts[0] === 'spaces' ? 1 : 0;
+    if (parts.length >= offset + 2) return `${parts[offset]}/${parts[offset + 1]}`;
+    return pathname;
+  }
+
+  const repositoryHosts = new Set([
+    'github.com',
+    'raw.githubusercontent.com',
+    'codeload.github.com',
+    'gist.github.com',
+    'gist.githubusercontent.com',
+  ]);
+  if (repositoryHosts.has(host)) {
+    const match = pathname.match(/^\/([^/]+)\/([^/]+)(?:\/|$)/);
+    if (match) return `${match[1]}/${match[2]}`;
+  }
+
+  return pathname;
 }
 
 /**
@@ -69,6 +101,7 @@ function parseTarget(pathname, search) {
     try {
       const raw = pathname.slice(1).replace(/^https%3[Aa]\//, 'https://') + search;
       const url = new URL(raw);
+      if (!HOSTS[url.hostname]) return null;
       return { host: url.hostname, url, isHtml: HTML_HOSTS.has(url.hostname) };
     } catch {
       return null;
@@ -112,11 +145,15 @@ export async function proxyGithub(request, env) {
   // Block HTML page proxying (we only proxy files, archives, API)
   if (target.isHtml) {
     const path = target.url.pathname;
-    // Allow specific non-HTML paths on github.com / huggingface.co
-    if (!isStaticAsset(path) && !path.startsWith('/api.')) {
-      // For github.com paths that aren't files, try blob→raw rewrite
+    // Allow specific non-HTML paths on HTML hosts
+    if (!isStaticAsset(path) && !path.startsWith('/api.') && !path.startsWith('/api/')) {
+      // GitHub: blob → raw.githubusercontent.com rewrite
       if (target.host === 'github.com' && BLOB_RE.test(path)) {
         target.url = new URL(rewriteBlob(path), 'https://raw.githubusercontent.com');
+        target.isHtml = false;
+      // GitLab: /-/blob/ → /-/raw/ rewrite (same host)
+      } else if (target.host === 'gitlab.com' && GITLAB_BLOB_RE.test(path)) {
+        target.url = new URL(path.replace(GITLAB_BLOB_RE, '/-/raw/'), 'https://gitlab.com');
         target.isHtml = false;
       } else {
         return errorResponse(403, 'HTML pages are not proxied');
@@ -124,10 +161,7 @@ export async function proxyGithub(request, env) {
     }
   }
 
-  // Access control: check owner/repo for GitHub, path for others
-  const ownerRepo = extractOwnerRepo(target.url.pathname);
-  const accessTarget = ownerRepo || target.url.pathname;
-  const access = checkAccess(accessTarget, env);
+  const access = checkAccess(accessTarget(target.host, target.url.pathname), env);
   if (!access.allowed) {
     return errorResponse(403, `Access denied: ${access.reason}`);
   }
@@ -145,7 +179,8 @@ export async function proxyGithub(request, env) {
   try {
     upstreamRes = await fetch(upstreamReq);
   } catch (err) {
-    return errorResponse(502, `Upstream fetch failed: ${err.message}`);
+    console.error('Upstream fetch failed', err);
+    return errorResponse(502, 'Upstream fetch failed');
   }
 
   // Handle redirects: rewrite Location to point through the proxy
@@ -161,7 +196,11 @@ export async function proxyGithub(request, env) {
 
   // Build response with sanitized + cache headers
   const respHeaders = sanitizeHeaders(upstreamRes.headers);
-  const cache = cacheHeaders(upstreamUrl, upstreamRes.headers);
+  const cache = cacheHeaders(
+    upstreamUrl,
+    upstreamRes.headers,
+    upstreamReq.headers.has('authorization') || request.headers.has('cookie'),
+  );
   for (const [k, v] of cache) respHeaders.set(k, v);
   withCors(respHeaders);
 

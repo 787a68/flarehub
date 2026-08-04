@@ -3,7 +3,7 @@
  *
  * Routes requests to:
  * - Static assets (frontend panel) via ASSETS binding
- * - Docker Registry proxy (/v2, /token, /<host>/v2, /<host>/token)
+ * - Docker Registry proxy (/v2 and /token)
  * - GitHub / HF / Docker binary proxy (everything else)
  *
  * Rate limiting is applied only to proxy requests (registry + github),
@@ -11,13 +11,8 @@
  */
 
 import { proxyGithub } from './github.js';
-import { proxyRegistry, REGISTRIES } from './registry.js';
+import { proxyRegistry } from './registry.js';
 import { errorResponse, corsPreflight } from './http.js';
-
-/** Non-Docker Hub registry hosts (for path-prefix routing). */
-const REGISTRY_HOSTS = new Set(
-  Object.keys(REGISTRIES).filter((h) => h !== 'registry-1.docker.io')
-);
 
 /** Set of all known upstream hosts for fast lookup. */
 const KNOWN_HOSTS = new Set([
@@ -27,19 +22,12 @@ const KNOWN_HOSTS = new Set([
   'objects.githubusercontent.com', 'github-releases.githubusercontent.com',
   'huggingface.co', 'cdn-lfs.hf.co', 'cdn-lfs-us-1.hf.co',
   'download.docker.com',
-  'registry-1.docker.io', 'ghcr.io', 'quay.io', 'gcr.io', 'registry.k8s.io',
+  'gitlab.com',
 ]);
 
-/**
- * Determine if a path is a registry proxy request.
- * /v2, /v2/..., /token, /<host>/v2, /<host>/v2/..., /<host>/token
- */
+/** Determine if a path belongs to the Docker Registry v2 protocol. */
 function isRegistryPath(pathname) {
-  if (pathname === '/v2' || pathname.startsWith('/v2/') || pathname === '/token') return true;
-  for (const host of REGISTRY_HOSTS) {
-    if (pathname === `/${host}/v2` || pathname.startsWith(`/${host}/v2/`) || pathname === `/${host}/token`) return true;
-  }
-  return false;
+  return pathname === '/v2' || pathname.startsWith('/v2/') || pathname === '/token';
 }
 
 /**
@@ -75,7 +63,7 @@ async function checkRateLimit(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const pathname = url.pathname;
 
@@ -90,11 +78,11 @@ export default {
       return env.ASSETS.fetch(new Request(new URL('/', url.origin), request));
     }
 
-    // Registry proxy: /v2, /token, /<host>/v2, /<host>/token
+    // Registry proxy: /v2 and /token
     if (isRegistryPath(pathname)) {
       const limited = await checkRateLimit(request, env);
       if (limited) return limited;
-      return proxyRegistry(request, env);
+      return proxyRegistry(request, env, ctx);
     }
 
     // GitHub/HF/Docker binary proxy

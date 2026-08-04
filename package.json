@@ -7,11 +7,8 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "dev": "npx --yes wrangler@latest dev",
+    "deploy": "npx --yes wrangler@latest deploy",
     "check": "node --check src/worker.js && node --check src/access.js && node --check src/github.js && node --check src/http.js && node --check src/registry.js && node --check scripts/prepare-deploy.mjs && node --check public/app.js"
-  },
-  "devDependencies": {
-    "wrangler": "^4.27.0"
   }
 }
