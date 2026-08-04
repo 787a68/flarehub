@@ -24,10 +24,6 @@
     'cdn-lfs-us-1.hf.co',
     'download.docker.com',
     'gitlab.com',
-    'ghcr.io',
-    'quay.io',
-    'gcr.io',
-    'registry.k8s.io',
   ];
 
   /** Usage examples for the panel. */
@@ -203,7 +199,15 @@
     var modeEl = document.getElementById('policyMatchMode');
     if (!wlEl || !blEl) return;
 
-    var config = window.__FLAREHUB_CONFIG__ || { whitelist: [], blacklist: [], caseInsensitive: false };
+    var config = { whitelist: [], blacklist: [], caseInsensitive: false };
+    var configElement = document.getElementById('flarehub-config');
+    if (configElement) {
+      try {
+        config = JSON.parse(configElement.textContent);
+      } catch (_) {
+        // Keep safe defaults when deployment configuration is malformed.
+      }
+    }
     renderChips(wlEl, config.whitelist);
     renderChips(blEl, config.blacklist);
     if (modeEl) {

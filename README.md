@@ -29,7 +29,7 @@
 
 | 类别 | 域名 |
 |------|------|
-| GitHub | `github.com`、`raw.githubusercontent.com`、`api.github.com`、`codeload.github.com`、`github.githubassets.com`、`gist.github.com`、`gist.githubusercontent.com`、`objects.githubusercontent.com`、`github-releases.githubusercontent.com` |
+| GitHub | `github.com`、`raw.githubusercontent.com`、`api.github.com`、`codeload.github.com`、`github.githubassets.com`、`gist.github.com`、`gist.githubusercontent.com`、`objects.githubusercontent.com`、`github-releases.githubusercontent.com`、`release-assets.githubusercontent.com` |
 | Docker Registry | `registry-1.docker.io`、`ghcr.io`、`quay.io`、`gcr.io`、`registry.k8s.io` |
 | Docker 二进制 | `download.docker.com` |
 | Hugging Face | `huggingface.co`、`cdn-lfs.hf.co`、`cdn-lfs-us-1.hf.co` |
@@ -300,7 +300,7 @@ BLACKLIST = private, internal
 
 ### 前端面板不显示访问规则？
 
-访问规则在部署时内联到 `index.html` 中（`window.__FLAREHUB_CONFIG__`），无需额外 Worker 请求。修改 `WHITELIST` / `BLACKLIST` / `CASE_INSENSITIVE` 环境变量后，需要重新部署才能更新前端面板显示。注意：访问控制的实际执行在 Worker 端实时读取环境变量，修改后立即生效，无需重新部署。
+访问规则在部署时以内联 JSON 数据块写入 `index.html`，无需额外 Worker 请求。修改 `WHITELIST` / `BLACKLIST` / `CASE_INSENSITIVE` 环境变量后，需要重新部署才能更新前端面板显示。注意：访问控制的实际执行在 Worker 端实时读取环境变量，修改后立即生效，无需重新部署。
 
 ### 如何关闭前端面板只保留代理功能？
 

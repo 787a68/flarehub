@@ -4,8 +4,9 @@
 
 /** Headers that must be stripped from upstream responses. */
 const HOP_BY_HOP = new Set([
-  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
-  'te', 'trailer', 'transfer-encoding', 'upgrade',
+  'connection', 'keep-alive', 'proxy-authenticate',   'proxy-authorization',
+  'cookie',
+  'te', 'trailer', 'transfer-encoding', 'set-cookie', 'upgrade',
 ]);
 
 /** Headers that reveal origin identity or break proxying. */
@@ -28,6 +29,7 @@ const STRIP = new Set([
 export const CDN_HOSTS = new Set([
   'objects.githubusercontent.com',
   'github-releases.githubusercontent.com',
+  'release-assets.githubusercontent.com',
   'cdn-lfs.hf.co',
   'cdn-lfs-us-1.hf.co',
 ]);
@@ -91,6 +93,7 @@ export function sanitizeRequestHeaders(headers) {
   out.delete('host');
   out.delete('origin');
   out.delete('referer');
+  out.delete('cookie');
   out.delete('cf-connecting-ip');
   out.delete('cf-ipcountry');
   out.delete('cf-ray');
@@ -115,6 +118,7 @@ export function sanitizeHeaders(headers) {
     if (HOP_BY_HOP.has(lower) || STRIP.has(lower)) continue;
     out.set(key, value);
   }
+  out.set('x-content-type-options', 'nosniff');
   return out;
 }
 

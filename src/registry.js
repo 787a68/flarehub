@@ -358,8 +358,17 @@ export async function proxyRegistry(request, env, ctx) {
     return errorResponse(404, 'Unknown registry path');
   }
 
-  // Auth token relay
+  // Auth token relay. Apply the same repository access rules to scope requests
+  // so blocked images cannot obtain a pull token through /token directly.
   if (target.isAuth) {
+    const scope = target.upstream.searchParams.get('scope') || '';
+    const match = scope.match(/^repository:([^:]+):/);
+    if (match) {
+      const access = checkAccess(match[1], env);
+      if (!access.allowed) {
+        return errorResponse(403, `Access denied: ${access.reason}`);
+      }
+    }
     return handleAuth(target.upstream, request, target.host, ctx);
   }
 

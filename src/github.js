@@ -8,7 +8,7 @@
  * - Docker binary: download.docker.com
  */
 
-import { errorResponse, redirectResponse, sanitizeHeaders, sanitizeRequestHeaders, cacheHeaders, withCors, isStaticAsset } from './http.js';
+import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, cacheHeaders, withCors, isStaticAsset } from './http.js';
 import { checkAccess } from './access.js';
 
 /** Upstream host → upstream base URL mapping. */
@@ -23,6 +23,7 @@ const HOSTS = {
   'gist.githubusercontent.com': 'https://gist.githubusercontent.com',
   'objects.githubusercontent.com': 'https://objects.githubusercontent.com',
   'github-releases.githubusercontent.com': 'https://github-releases.githubusercontent.com',
+  'release-assets.githubusercontent.com': 'https://release-assets.githubusercontent.com',
   // Hugging Face
   'huggingface.co': 'https://huggingface.co',
   'cdn-lfs.hf.co': 'https://cdn-lfs.hf.co',
@@ -166,32 +167,36 @@ export async function proxyGithub(request, env) {
     return errorResponse(403, `Access denied: ${access.reason}`);
   }
 
-  // Build upstream request
-  const upstreamUrl = target.url;
-  const upstreamReq = new Request(upstreamUrl, {
-    method: request.method,
-    headers: sanitizeRequestHeaders(request.headers),
-    redirect: 'manual',
-  });
-
-  // Fetch upstream
+  // Follow redirects inside the Worker so credentials can be removed before
+  // crossing hosts and clients never receive an unsupported proxy URL.
+  let upstreamUrl = target.url;
+  const upstreamHeaders = sanitizeRequestHeaders(request.headers);
+  const authenticated = upstreamHeaders.has('authorization');
   let upstreamRes;
+
   try {
-    upstreamRes = await fetch(upstreamReq);
+    for (let redirects = 0; ; redirects++) {
+      upstreamRes = await fetch(new Request(upstreamUrl, {
+        method: request.method,
+        headers: upstreamHeaders,
+        redirect: 'manual',
+      }));
+
+      if (upstreamRes.status < 300 || upstreamRes.status >= 400) break;
+      const location = upstreamRes.headers.get('location');
+      if (!location) break;
+      if (redirects >= 5) return errorResponse(508, 'Too many upstream redirects');
+
+      const nextUrl = new URL(location, upstreamUrl);
+      if (nextUrl.protocol !== 'https:' || !HOSTS[nextUrl.hostname]) {
+        return errorResponse(502, 'Unsupported upstream redirect');
+      }
+      if (nextUrl.host !== upstreamUrl.host) upstreamHeaders.delete('authorization');
+      upstreamUrl = nextUrl;
+    }
   } catch (err) {
     console.error('Upstream fetch failed', err);
     return errorResponse(502, 'Upstream fetch failed');
-  }
-
-  // Handle redirects: rewrite Location to point through the proxy
-  if (upstreamRes.status >= 300 && upstreamRes.status < 400) {
-    const location = upstreamRes.headers.get('location');
-    if (location) {
-      const absolute = new URL(location, upstreamUrl);
-      // Primary format: /host/path (without protocol)
-      const redirectPath = '/' + absolute.hostname + absolute.pathname + absolute.search + absolute.hash;
-      return redirectResponse(redirectPath, upstreamRes.status);
-    }
   }
 
   // Build response with sanitized + cache headers
@@ -199,7 +204,7 @@ export async function proxyGithub(request, env) {
   const cache = cacheHeaders(
     upstreamUrl,
     upstreamRes.headers,
-    upstreamReq.headers.has('authorization') || request.headers.has('cookie'),
+    authenticated,
   );
   for (const [k, v] of cache) respHeaders.set(k, v);
   withCors(respHeaders);

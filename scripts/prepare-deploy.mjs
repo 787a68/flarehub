@@ -71,7 +71,7 @@ if (config.assets) {
   // Overwrite index.html with inlined config
   const outHtml = new URL("index.html", assetsDir);
   let html = await readFile(outHtml, "utf8");
-  html = html.replace("<!--FLAREHUB_CONFIG-->", `<script>window.__FLAREHUB_CONFIG__=${panelConfig};</script>`);
+  html = html.replace("<!--FLAREHUB_CONFIG-->", `<script id="flarehub-config" type="application/json">${panelConfig}</script>`);
   await writeFile(outHtml, html);
   config.assets.directory = "../.wrangler/public";
 }

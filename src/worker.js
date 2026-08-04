@@ -19,7 +19,7 @@ const KNOWN_HOSTS = new Set([
   'github.com', 'raw.githubusercontent.com', 'api.github.com',
   'codeload.github.com', 'github.githubassets.com',
   'gist.github.com', 'gist.githubusercontent.com',
-  'objects.githubusercontent.com', 'github-releases.githubusercontent.com',
+  'objects.githubusercontent.com', 'github-releases.githubusercontent.com', 'release-assets.githubusercontent.com',
   'huggingface.co', 'cdn-lfs.hf.co', 'cdn-lfs-us-1.hf.co',
   'download.docker.com',
   'gitlab.com',
@@ -87,6 +87,9 @@ export default {
 
     // GitHub/HF/Docker binary proxy
     if (isProxyPath(pathname)) {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        return errorResponse(405, 'Method not allowed');
+      }
       const limited = await checkRateLimit(request, env);
       if (limited) return limited;
       return proxyGithub(request, env);
