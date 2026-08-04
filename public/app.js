@@ -8,6 +8,8 @@
 (function () {
   'use strict';
 
+  var THEME_KEY = 'flarehub-theme';
+
   /** Upstream hosts that can be proxied. */
   var HOSTS = [
     'github.com',
@@ -114,6 +116,9 @@
     var outputLink = document.getElementById('githubFormattedLink');
     var copyBtn = document.getElementById('copyButton');
     var downloadBtn = document.getElementById('downloadButton');
+    var themeToggle = document.getElementById('themeToggle');
+
+    initThemeToggle(themeToggle);
 
     var currentUrl = null;
 
@@ -188,7 +193,81 @@
     // Render access rules
     renderRules();
     renderExamples();
+    initGlassMotion();
   });
+
+  /** Initialize and persist the manual light/dark theme toggle. */
+  function initThemeToggle(button) {
+    if (!button) return;
+    var systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
+
+    function currentTheme() {
+      var explicit = document.documentElement.getAttribute('data-theme');
+      return explicit || (systemTheme.matches ? 'dark' : 'light');
+    }
+
+    function updateButton() {
+      var next = currentTheme() === 'dark' ? '亮色' : '深色';
+      var label = '切换到' + next + '模式';
+      button.setAttribute('aria-label', label);
+      button.setAttribute('title', label);
+    }
+
+    button.addEventListener('click', function () {
+      var theme = currentTheme() === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', theme);
+      try {
+        window.localStorage.setItem(THEME_KEY, theme);
+      } catch (e) {
+        // The selected theme still applies for the current page.
+      }
+      updateButton();
+    });
+
+    if (systemTheme.addEventListener) {
+      systemTheme.addEventListener('change', updateButton);
+    }
+    updateButton();
+  }
+
+  /**
+   * Track pointer position for a lightweight glass highlight.
+   */
+  function initGlassMotion() {
+    if (!window.matchMedia('(pointer: fine)').matches ||
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    document.querySelectorAll('.card-glass').forEach(function (card) {
+      var frame = 0;
+      var rect = null;
+      var point = { x: 0, y: 0 };
+
+      card.addEventListener('pointerenter', function () {
+        rect = card.getBoundingClientRect();
+      }, { passive: true });
+
+      card.addEventListener('pointermove', function (event) {
+        point.x = event.clientX;
+        point.y = event.clientY;
+        if (frame || !rect) return;
+        frame = window.requestAnimationFrame(function () {
+          var x = ((point.x - rect.left) / rect.width) * 100;
+          var y = ((point.y - rect.top) / rect.height) * 100;
+          card.style.setProperty('--glass-x', x.toFixed(1) + '%');
+          card.style.setProperty('--glass-y', y.toFixed(1) + '%');
+          frame = 0;
+        });
+      }, { passive: true });
+
+      card.addEventListener('pointerleave', function () {
+        if (frame) window.cancelAnimationFrame(frame);
+        frame = 0;
+        rect = null;
+        card.style.removeProperty('--glass-x');
+        card.style.removeProperty('--glass-y');
+      }, { passive: true });
+    });
+  }
 
   /**
    * Render access rules as chips.

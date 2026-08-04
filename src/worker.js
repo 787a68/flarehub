@@ -22,7 +22,8 @@ const KNOWN_HOSTS = new Set([
   'objects.githubusercontent.com', 'github-releases.githubusercontent.com', 'release-assets.githubusercontent.com',
   'huggingface.co', 'cdn-lfs.hf.co', 'cdn-lfs-us-1.hf.co',
   'download.docker.com',
-  'gitlab.com',
+  'gitlab.com', 'gitlab.freedesktop.org', 'gitlab.gnome.org',
+  'gitlab.kitware.com', 'gitlab.archlinux.org', 'gitlab.postmarketos.org',
 ]);
 
 /** Determine if a path belongs to the Docker Registry v2 protocol. */
@@ -86,10 +87,8 @@ export default {
     }
 
     // GitHub/HF/Docker binary proxy
+    // Method validation is handled inside proxyGithub (Git requests allow POST)
     if (isProxyPath(pathname)) {
-      if (request.method !== 'GET' && request.method !== 'HEAD') {
-        return errorResponse(405, 'Method not allowed');
-      }
       const limited = await checkRateLimit(request, env);
       if (limited) return limited;
       return proxyGithub(request, env);

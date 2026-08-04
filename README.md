@@ -9,13 +9,15 @@
 ## 功能特性
 
 - **GitHub 加速**：Release 下载、Archive 打包、Raw 文件、Codeload、API、Gist、静态资源
-- **GitLab 加速**：Raw 文件、Archive 打包、Release 下载、API
+- **GitLab 加速**：Raw 文件、Archive 打包、Release 下载、API，支持 gitlab.com 及 freedesktop、GNOME、Kitware、Arch Linux、postmarketOS 等自托管实例
+- **Git Clone 加速**：支持 Git smart-http 协议（`git clone` / `git fetch`），兼容 GitHub 与所有 GitLab 实例
 - **Docker Registry 代理**：支持 `docker pull` 直接拉取，兼容 Docker Hub、GHCR、Quay、GCR、registry.k8s.io
   - 401 自动拦截（匿名）：Worker 内部获取 token 并重试，将 3 次往返（401 → token → retry）压缩为 1 次客户端请求
   - 401 透传（认证）：保留原始 `auth.docker.io` 认证域，用户 `docker login docker.io` 即可享受个人 200/6h 配额
   - 令牌中继：通过 `/token` 端点转发认证请求，Cache API 缓存匿名令牌（280s TTL）以减少 401 往返
   - 其他注册表：重写 `www-authenticate` realm 至代理 `/token`，由 Worker 转发上游认证
   - 重定向跟随：自动跟随上游 302（最多 5 跳），跨域时剥离 `Authorization` 头防止凭证泄露
+  - S3 / CloudFront 头补全：blob 层下载重定向至 AWS S3 或 CloudFront 时，自动注入 `x-amz-content-sha256` 与 `x-amz-date` 头，避免匿名拉取被 CDN 返回 403
   - Location 头剥离：删除响应中的 `Location` 头，防止客户端绕过代理直连上游 CDN
 - **Hugging Face 加速**：resolve、blob、raw 文件及 CDN LFS 大文件
 - **访问控制**：基于关键词的白名单 / 黑名单，黑名单优先；支持 GitHub API、GitLab 子组与 Hugging Face 仓库路径
@@ -33,7 +35,7 @@
 | Docker Registry | `registry-1.docker.io`、`ghcr.io`、`quay.io`、`gcr.io`、`registry.k8s.io` |
 | Docker 二进制 | `download.docker.com` |
 | Hugging Face | `huggingface.co`、`cdn-lfs.hf.co`、`cdn-lfs-us-1.hf.co` |
-| GitLab | `gitlab.com` |
+| GitLab | `gitlab.com`、`gitlab.freedesktop.org`、`gitlab.gnome.org`、`gitlab.kitware.com`、`gitlab.archlinux.org`、`gitlab.postmarketos.org` |
 
 ## 使用方法
 
@@ -75,8 +77,26 @@ https://flarehub.example.com/https://github.com/user/repo
 | Archive 打包 | `https://flarehub.example.com/gitlab.com/user/repo/-/archive/main/repo.tar.gz` |
 | Release 下载 | `https://flarehub.example.com/gitlab.com/user/repo/-/releases/v1.0/downloads/file.zip` |
 | API | `https://flarehub.example.com/gitlab.com/api/v4/projects` |
+| 自托管实例 | `https://flarehub.example.com/gitlab.freedesktop.org/user/repo/-/raw/main/file.c` |
 
-> GitLab 支持子组（subgroup）路径，如 `gitlab.com/group/subgroup/repo/-/raw/main/file`。
+> GitLab 支持子组（subgroup）路径，如 `gitlab.com/group/subgroup/repo/-/raw/main/file`。除 `gitlab.com` 外，还支持 `gitlab.freedesktop.org`、`gitlab.gnome.org`、`gitlab.kitware.com`、`gitlab.archlinux.org`、`gitlab.postmarketos.org` 等自托管实例。
+
+### Git Clone 加速
+
+支持 Git smart-http 协议，可直接通过代理执行 `git clone`、`git fetch`、`git pull`：
+
+```bash
+# GitHub 仓库
+git clone https://flarehub.example.com/github.com/user/repo.git
+
+# GitLab 仓库
+git clone https://flarehub.example.com/gitlab.com/user/repo.git
+
+# 自托管 GitLab 实例
+git clone https://flarehub.example.com/gitlab.freedesktop.org/user/repo.git
+```
+
+私有仓库可通过 `git clone https://flarehub.example.com/github.com/user/repo.git` 配合 HTTP Basic Auth（`git clone https://user:token@flarehub.example.com/...`）传入凭据。
 
 ### Docker Registry 加速
 
@@ -209,7 +229,7 @@ RATE_LIMITER = 60
 | `main` | Worker 入口文件，默认 `src/worker.js` |
 | `compatibility_date` | 兼容性日期，影响运行时行为 |
 | `assets` | 静态资源配置，部署时由 `prepare-deploy.mjs` 将 `public/` 复制到 `.wrangler/public/` 并内联配置，通过 `ASSETS` 绑定提供 |
-| `assets.run_worker_first` | 匹配的路径优先由 Worker 处理，包括 `/v2/*`、`/token`、各注册表与上游域名通配符、`/https://*` 完整 URL 格式 |
+| `assets.run_worker_first` | 匹配的路径优先由 Worker 处理，包括 `/v2/*`、`/token`、各注册表与上游域名通配符（含自托管 GitLab 实例）、`/https:///*` 完整 URL 格式 |
 | `assets.not_found_handling` | 静态资源 404 时返回 `404-page` 页面 |
 | `ratelimits` | Rate Limiter 绑定，`namespace_id` 为限流命名空间，默认 120 次 / 60 秒 |
 | `vars` | 环境变量默认值，可被 Cloudflare Dashboard / GitHub Variables 覆盖 |
@@ -229,7 +249,7 @@ RATE_LIMITER = 60
 
 访问规则匹配逻辑：
 - 对 GitHub 仓库、GitHub API 与 Gist，匹配对象优先为 `owner/repo`
-- 对 GitLab 文件代理，匹配完整项目路径，包含任意层级子组
+- 对 GitLab 文件代理，匹配完整项目路径，包含任意层级子组（适用于所有支持的 GitLab 实例）
 - 对 Hugging Face 模型、Dataset 与 Space，匹配对象为 `owner/repo`
 - 对 Docker Registry 代理，匹配对象为镜像仓库名
 - 关键词为**包含匹配**：目标字符串包含关键词即命中
@@ -246,10 +266,10 @@ RATE_LIMITER = 60
 flarehub/
 ├── src/
 │   ├── worker.js          # Worker 入口，路由分发
-│   ├── github.js          # GitHub / GitLab / HuggingFace / Docker 二进制代理
+│   ├── github.js          # GitHub / GitLab / HuggingFace / Docker 二进制 / Git Clone 代理
 │   ├── registry.js        # Docker Registry v2 代理与令牌转发
 │   ├── access.js          # 白名单 / 黑名单访问控制
-│   └── http.js            # HTTP 工具：CORS、错误、头清理、缓存
+│   └── http.js            # HTTP 工具：CORS、错误、头清理、缓存、S3 头补全
 ├── public/
 │   ├── index.html         # 前端面板
 │   ├── app.js             # 前端逻辑：链接转换、规则展示

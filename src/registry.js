@@ -18,7 +18,7 @@
  * - www-authenticate realm rewriting for non-Docker Hub registries
  */
 
-import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, withCors } from './http.js';
+import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, withCors, ensureS3Headers } from './http.js';
 import { checkAccess } from './access.js';
 
 /** Registry host → upstream base URL. */
@@ -266,6 +266,10 @@ async function fetchRegistry(upstream, method, sourceHeaders, maxRedirects = 5) 
   const headers = new Headers(sourceHeaders);
 
   for (let redirects = 0; ; redirects++) {
+    // Add AWS S3/CloudFront required headers when redirected to amazonaws.com
+    // (Docker registries redirect blob layer downloads to S3/CloudFront CDN)
+    ensureS3Headers(currentUrl, headers);
+
     const response = await fetch(new Request(currentUrl, {
       method,
       headers,

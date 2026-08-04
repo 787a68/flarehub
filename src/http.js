@@ -34,6 +34,43 @@ export const CDN_HOSTS = new Set([
   'cdn-lfs-us-1.hf.co',
 ]);
 
+/** SHA-256 of an empty body — required by AWS S3 / CloudFront for GET requests. */
+const EMPTY_BODY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+/**
+ * Check if a URL (or hostname string) points to AWS S3 / CloudFront.
+ * These hosts require x-amz-content-sha256 and x-amz-date headers.
+ */
+export function isAmazonS3(urlOrHost) {
+  try {
+    const host = typeof urlOrHost === 'string' && !urlOrHost.includes('://')
+      ? urlOrHost
+      : new URL(urlOrHost).hostname;
+    return host.includes('amazonaws.com') || host.includes('cloudfront.net');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Generate the current UTC timestamp in AWS date format: YYYYMMDDTHHMMSSZ.
+ */
+export function getAmzDate() {
+  return new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
+}
+
+/**
+ * Ensure AWS S3 / CloudFront required headers are present.
+ * Adds x-amz-content-sha256 (empty body hash) and x-amz-date.
+ * Should be called before every fetch to an amazonaws.com / cloudfront.net host.
+ */
+export function ensureS3Headers(url, headers) {
+  if (!isAmazonS3(url)) return headers;
+  headers.set('x-amz-content-sha256', EMPTY_BODY_SHA256);
+  headers.set('x-amz-date', getAmzDate());
+  return headers;
+}
+
 /** File extension pattern for static (immutable) content. Shared across modules. */
 export const FILE_EXT_RE = /\.(zip|tar\.gz|tgz|tar|gz|bz2|7z|iso|exe|msi|deb|rpm|dmg|pkg|jar|war|whl|egg|gem|crate|apk|dll|so|dylib|bin|img|dat|db|sqlite|woff2?|ttf|otf|eot|png|jpe?g|gif|webp|svg|ico|bmp|mp[34]|wav|flac|ogg|avi|mov|mkv|webm|pdf|epub|mobi|cbz|cbr)$/i;
 

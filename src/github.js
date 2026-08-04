@@ -8,7 +8,7 @@
  * - Docker binary: download.docker.com
  */
 
-import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, cacheHeaders, withCors, isStaticAsset } from './http.js';
+import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, cacheHeaders, withCors, isStaticAsset, ensureS3Headers, isAmazonS3 } from './http.js';
 import { checkAccess } from './access.js';
 
 /** Upstream host → upstream base URL mapping. */
@@ -32,10 +32,31 @@ const HOSTS = {
   'download.docker.com': 'https://download.docker.com',
   // GitLab
   'gitlab.com': 'https://gitlab.com',
+  'gitlab.freedesktop.org': 'https://gitlab.freedesktop.org',
+  'gitlab.gnome.org': 'https://gitlab.gnome.org',
+  'gitlab.kitware.com': 'https://gitlab.kitware.com',
+  'gitlab.archlinux.org': 'https://gitlab.archlinux.org',
+  'gitlab.postmarketos.org': 'https://gitlab.postmarketos.org',
 };
 
 /** Hosts that serve HTML pages (not proxied as-is). */
-const HTML_HOSTS = new Set(['github.com', 'huggingface.co', 'gist.github.com', 'gitlab.com']);
+const HTML_HOSTS = new Set([
+  'github.com', 'huggingface.co', 'gist.github.com',
+  'gitlab.com', 'gitlab.freedesktop.org', 'gitlab.gnome.org',
+  'gitlab.kitware.com', 'gitlab.archlinux.org', 'gitlab.postmarketos.org',
+]);
+
+/** All GitLab instances for access-control path parsing. */
+const GITLAB_HOSTS = new Set([
+  'gitlab.com', 'gitlab.freedesktop.org', 'gitlab.gnome.org',
+  'gitlab.kitware.com', 'gitlab.archlinux.org', 'gitlab.postmarketos.org',
+]);
+
+/** Hosts that support Git smart-http protocol (git clone). */
+const GIT_CAPABLE_HOSTS = new Set([
+  'github.com', 'codeload.github.com',
+  ...GITLAB_HOSTS,
+]);
 
 /** GitHub blob path pattern: /owner/repo/blob/branch/path → raw. */
 const BLOB_RE = /^\/([^/]+)\/([^/]+)\/blob\/(.+)$/;
@@ -50,7 +71,7 @@ function accessTarget(host, pathname) {
     return match ? `${match[1]}/${match[2]}` : pathname;
   }
 
-  if (host === 'gitlab.com') {
+  if (GITLAB_HOSTS.has(host)) {
     const projectEnd = pathname.indexOf('/-/');
     if (projectEnd > 1) return pathname.slice(1, projectEnd);
     return pathname;
@@ -123,6 +144,42 @@ function parseTarget(pathname, search) {
 }
 
 /**
+ * Detect Git smart-http protocol requests (git clone / fetch / push).
+ * Checks User-Agent and URL path patterns.
+ */
+function isGitRequest(request, pathname) {
+  const ua = (request.headers.get('user-agent') || '').toLowerCase();
+  if (ua.includes('git/')) return true;
+
+  // Git smart-http endpoints
+  if (pathname.includes('/info/refs') ||
+      pathname.includes('/git-upload-pack') ||
+      pathname.includes('/git-receive-pack')) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Build minimal headers for Git smart-http requests.
+ * Strips all Cloudflare/proxy/internal headers to avoid interference.
+ */
+function buildGitHeaders(request) {
+  const headers = new Headers();
+  const preserve = [
+    'accept', 'accept-encoding', 'accept-language',
+    'authorization', 'content-type', 'content-encoding',
+    'git-protocol', 'user-agent', 'pragma',
+  ];
+  for (const key of preserve) {
+    const val = request.headers.get(key);
+    if (val) headers.set(key, val);
+  }
+  return headers;
+}
+
+/**
  * Main proxy handler for GitHub / HF / Docker binary.
  *
  * @param {Request} request
@@ -133,18 +190,23 @@ function parseTarget(pathname, search) {
 export async function proxyGithub(request, env) {
   const url = new URL(request.url);
 
-  // Only allow safe methods
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    return errorResponse(405, 'Method not allowed');
-  }
-
   const target = parseTarget(url.pathname, url.search);
   if (!target) {
     return errorResponse(404, 'Unknown upstream host');
   }
 
+  // Detect Git smart-http requests (git clone support)
+  const gitRequest = GIT_CAPABLE_HOSTS.has(target.host) && isGitRequest(request, target.url.pathname);
+
+  // Only allow safe methods; Git requests need POST for git-upload-pack
+  const allowedMethods = gitRequest ? ['GET', 'HEAD', 'POST'] : ['GET', 'HEAD'];
+  if (!allowedMethods.includes(request.method)) {
+    return errorResponse(405, 'Method not allowed');
+  }
+
   // Block HTML page proxying (we only proxy files, archives, API)
-  if (target.isHtml) {
+  // Skip for Git requests — they use smart-http endpoints, not HTML pages
+  if (!gitRequest && target.isHtml) {
     const path = target.url.pathname;
     // Allow specific non-HTML paths on HTML hosts
     if (!isStaticAsset(path) && !path.startsWith('/api.') && !path.startsWith('/api/')) {
@@ -153,8 +215,8 @@ export async function proxyGithub(request, env) {
         target.url = new URL(rewriteBlob(path), 'https://raw.githubusercontent.com');
         target.isHtml = false;
       // GitLab: /-/blob/ → /-/raw/ rewrite (same host)
-      } else if (target.host === 'gitlab.com' && GITLAB_BLOB_RE.test(path)) {
-        target.url = new URL(path.replace(GITLAB_BLOB_RE, '/-/raw/'), 'https://gitlab.com');
+      } else if (GITLAB_HOSTS.has(target.host) && GITLAB_BLOB_RE.test(path)) {
+        target.url = new URL(path.replace(GITLAB_BLOB_RE, '/-/raw/'), HOSTS[target.host]);
         target.isHtml = false;
       } else {
         return errorResponse(403, 'HTML pages are not proxied');
@@ -167,8 +229,34 @@ export async function proxyGithub(request, env) {
     return errorResponse(403, `Access denied: ${access.reason}`);
   }
 
-  // Follow redirects inside the Worker so credentials can be removed before
-  // crossing hosts and clients never receive an unsupported proxy URL.
+  // Git smart-http: use redirect:follow and pass request body (POST git-upload-pack)
+  if (gitRequest) {
+    const gitHeaders = buildGitHeaders(request);
+    try {
+      const upstreamRes = await fetch(new Request(target.url, {
+        method: request.method,
+        headers: gitHeaders,
+        body: request.method === 'POST' ? request.body : null,
+        redirect: 'follow',
+      }));
+
+      const respHeaders = sanitizeHeaders(upstreamRes.headers);
+      withCors(respHeaders);
+
+      const body = request.method === 'HEAD' ? null : upstreamRes.body;
+      return new Response(body, {
+        status: upstreamRes.status,
+        statusText: upstreamRes.statusText,
+        headers: respHeaders,
+      });
+    } catch (err) {
+      console.error('Git upstream fetch failed', err);
+      return errorResponse(502, 'Upstream fetch failed');
+    }
+  }
+
+  // Non-Git requests: follow redirects inside the Worker so credentials can be
+  // removed before crossing hosts and clients never receive a proxy URL.
   let upstreamUrl = target.url;
   const upstreamHeaders = sanitizeRequestHeaders(request.headers);
   const authenticated = upstreamHeaders.has('authorization');
@@ -176,6 +264,9 @@ export async function proxyGithub(request, env) {
 
   try {
     for (let redirects = 0; ; redirects++) {
+      // Add AWS S3/CloudFront required headers when redirected to amazonaws.com
+      ensureS3Headers(upstreamUrl, upstreamHeaders);
+
       upstreamRes = await fetch(new Request(upstreamUrl, {
         method: request.method,
         headers: upstreamHeaders,
@@ -188,7 +279,11 @@ export async function proxyGithub(request, env) {
       if (redirects >= 5) return errorResponse(508, 'Too many upstream redirects');
 
       const nextUrl = new URL(location, upstreamUrl);
-      if (nextUrl.protocol !== 'https:' || !HOSTS[nextUrl.hostname]) {
+      if (nextUrl.protocol !== 'https:') {
+        return errorResponse(502, 'Unsupported upstream redirect');
+      }
+      // Allow redirects to known proxy hosts or AWS S3/CloudFront CDN
+      if (!HOSTS[nextUrl.hostname] && !isAmazonS3(nextUrl)) {
         return errorResponse(502, 'Unsupported upstream redirect');
       }
       if (nextUrl.host !== upstreamUrl.host) upstreamHeaders.delete('authorization');

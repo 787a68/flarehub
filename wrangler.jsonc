@@ -28,6 +28,11 @@
       "/cdn-lfs-us-1.hf.co/*",
       "/download.docker.com/*",
       "/gitlab.com/*",
+      "/gitlab.freedesktop.org/*",
+      "/gitlab.gnome.org/*",
+      "/gitlab.kitware.com/*",
+      "/gitlab.archlinux.org/*",
+      "/gitlab.postmarketos.org/*",
       "/https:///*", "/https%3A/*", "/https%3a/*"
     ]
   },
@@ -45,6 +50,15 @@
     "WHITELIST": "",
     "BLACKLIST": "",
     "CASE_INSENSITIVE": "false"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+      "head_sampling_rate": 1
+    }
   },
   "placement": {
     "mode": "smart"
