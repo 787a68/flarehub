@@ -101,10 +101,13 @@ function accessTarget(host, pathname) {
 
 /**
  * Rewrite a GitHub blob URL to its raw equivalent.
- * /owner/repo/blob/branch/file → /owner/repo/raw/branch/file
+ * github.com/owner/repo/blob/branch/file
+ *   → raw.githubusercontent.com/owner/repo/branch/file
+ * The "/blob" segment is dropped (it is NOT replaced with "/raw": that is a
+ * GitLab convention; raw.githubusercontent.com uses owner/repo/branch/path).
  */
 function rewriteBlob(pathname) {
-  return pathname.replace(BLOB_RE, '/$1/$2/raw/$3');
+  return pathname.replace(BLOB_RE, '/$1/$2/$3');
 }
 
 /**
@@ -208,19 +211,20 @@ export async function proxyGithub(request, env) {
   // Skip for Git requests — they use smart-http endpoints, not HTML pages
   if (!gitRequest && target.isHtml) {
     const path = target.url.pathname;
+
+    // Rewrite blob pages to their raw equivalent BEFORE the static-asset
+    // check, otherwise blob files with a static extension (e.g. .zip) would
+    // pass isStaticAsset() and get fetched as the HTML blob page.
+    if (target.host === 'github.com' && BLOB_RE.test(path)) {
+      target.url = new URL(rewriteBlob(path), 'https://raw.githubusercontent.com');
+      target.isHtml = false;
+    // GitLab: /-/blob/ → /-/raw/ rewrite (same host)
+    } else if (GITLAB_HOSTS.has(target.host) && GITLAB_BLOB_RE.test(path)) {
+      target.url = new URL(path.replace(GITLAB_BLOB_RE, '/-/raw/'), HOSTS[target.host]);
+      target.isHtml = false;
     // Allow specific non-HTML paths on HTML hosts
-    if (!isStaticAsset(path) && !path.startsWith('/api.') && !path.startsWith('/api/')) {
-      // GitHub: blob → raw.githubusercontent.com rewrite
-      if (target.host === 'github.com' && BLOB_RE.test(path)) {
-        target.url = new URL(rewriteBlob(path), 'https://raw.githubusercontent.com');
-        target.isHtml = false;
-      // GitLab: /-/blob/ → /-/raw/ rewrite (same host)
-      } else if (GITLAB_HOSTS.has(target.host) && GITLAB_BLOB_RE.test(path)) {
-        target.url = new URL(path.replace(GITLAB_BLOB_RE, '/-/raw/'), HOSTS[target.host]);
-        target.isHtml = false;
-      } else {
-        return errorResponse(403, 'HTML pages are not proxied');
-      }
+    } else if (!isStaticAsset(path) && !path.startsWith('/api.') && !path.startsWith('/api/')) {
+      return errorResponse(403, 'HTML pages are not proxied');
     }
   }
 
@@ -303,6 +307,27 @@ export async function proxyGithub(request, env) {
   );
   for (const [k, v] of cache) respHeaders.set(k, v);
   withCors(respHeaders);
+
+  // Default: force download (Content-Disposition: attachment).
+  // ?preview=1: switch to inline so the browser displays the content.
+  //   For safety, HTML content-types are forced to text/plain to prevent
+  //   rendering (anti-phishing). Images keep their original type.
+  const isPreview = url.searchParams.has('preview');
+  const pathParts = upstreamUrl.pathname.split('/');
+  const rawName = pathParts[pathParts.length - 1] || 'download';
+  let filename;
+  try { filename = decodeURIComponent(rawName); } catch { filename = rawName; }
+  filename = filename.replace(/"/g, '_');
+  if (isPreview) {
+    respHeaders.set('content-disposition', `inline; filename="${filename}"`);
+    // Anti-phishing: never let the browser render HTML in preview mode.
+    const ct = (respHeaders.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (ct === 'text/html' || ct === 'application/xhtml+xml') {
+      respHeaders.set('content-type', 'text/plain; charset=utf-8');
+    }
+  } else {
+    respHeaders.set('content-disposition', `attachment; filename="${filename}"`);
+  }
 
   // Stream the body
   const body = request.method === 'HEAD' ? null : upstreamRes.body;

@@ -414,6 +414,16 @@ body{
   .card-glass:hover{transform:none}
 }
 
+/* ===== Theme Switch (flash fix) =====
+   When toggling between light/dark, the JS briefly adds the
+   `theme-switching` class so border/box-shadow transitions don't
+   animate half-transparent values (which flash on iOS Safari). */
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after{
+  transition:none!important;
+}
+
 /* ===== Utility ===== */
 .hidden{display:none!important}
 

@@ -20,6 +20,7 @@
   - S3 / CloudFront 头补全：blob 层下载重定向至 AWS S3 或 CloudFront 时，自动注入 `x-amz-content-sha256` 与 `x-amz-date` 头，避免匿名拉取被 CDN 返回 403
   - Location 头剥离：删除响应中的 `Location` 头，防止客户端绕过代理直连上游 CDN
 - **Hugging Face 加速**：resolve、blob、raw 文件及 CDN LFS 大文件
+- **默认下载 + 安全预览**：代理文件默认强制下载（`Content-Disposition: attachment`）；附加 `?preview=1` 参数可在新窗口内联预览，预览模式下 HTML 被强制转为纯文本显示，杜绝钓鱼风险
 - **访问控制**：基于关键词的白名单 / 黑名单，黑名单优先；支持 GitHub API、GitLab 子组与 Hugging Face 仓库路径
 - **安全缓存**：匿名静态资源与镜像分层缓存，携带认证、Cookie 或 `Set-Cookie` 的响应禁止进入共享缓存
 - **Liquid Glass 面板**：静态光学色层、半透明折射、高光边框与适度模糊，无持续背景动画，兼顾质感、移动端功耗和无障碍体验
@@ -52,6 +53,8 @@ https://flarehub.example.com/github.com/user/repo
 ```
 https://flarehub.example.com/https://github.com/user/repo
 ```
+
+> **下载与预览**：所有代理文件默认强制下载（`Content-Disposition: attachment`）。在链接后附加 `?preview=1` 可切换为内联预览模式，例如 `https://flarehub.example.com/raw.githubusercontent.com/user/repo/main/README.md?preview=1`。预览模式下 HTML 内容会被强制转为纯文本显示，防止钓鱼；图片等安全类型保持原样渲染。
 
 ### GitHub 加速
 
@@ -326,7 +329,7 @@ BLACKLIST = private, internal
 
 ### 如何关闭前端面板只保留代理功能？
 
-设置 GitHub Variable `DEPLOY_FRONTEND=false`，部署脚本会移除 `assets` 配置，仅部署 Worker。
+设置 GitHub Variable `DEPLOY_FRONTEND=false`，部署脚本会将 `assets` 指向一个仅含 404 页面的最小目录。非代理路径（前端页面）由 assets 层直接返回 404，不消耗 Worker 调用；只有代理路径（`run_worker_first` 中列出的）才会触发 Worker。
 
 ## 许可证
 

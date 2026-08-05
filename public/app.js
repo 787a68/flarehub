@@ -33,17 +33,25 @@
     { label: 'GitHub Release', url: 'https://github.com/user/repo/releases/download/v1.0/file.zip' },
     { label: 'GitHub Archive', url: 'https://github.com/user/repo/archive/refs/tags/v1.0.tar.gz' },
     { label: 'GitHub Raw', url: 'https://raw.githubusercontent.com/user/repo/main/README.md' },
+    { label: 'GitHub Blob', url: 'https://github.com/user/repo/blob/main/README.md' },
     { label: 'GitHub Codeload', url: 'https://codeload.github.com/user/repo/zip/refs/heads/main' },
     { label: 'Hugging Face', url: 'https://huggingface.co/bert-base-uncased/resolve/main/pytorch_model.bin' },
     { label: 'Docker Hub', cmd: 'docker pull your-domain.com/nginx' },
     { label: 'GHCR', cmd: 'docker pull your-domain.com/ghcr.io/user/image' },
     { label: 'Docker Binary', url: 'https://download.docker.com/linux/static/stable/x86_64/docker.tgz' },
+    { label: 'GitLab Blob', url: 'https://gitlab.com/user/repo/-/blob/main/README.md' },
     { label: 'GitLab Raw', url: 'https://gitlab.com/user/repo/-/raw/main/README.md' },
     { label: 'GitLab Archive', url: 'https://gitlab.com/user/repo/-/archive/main/repo.tar.gz' },
   ];
 
   /**
    * Convert an upstream URL to a proxied URL.
+   * "blob" pages are auto-converted to their raw equivalent so the proxied
+   * link returns the file content instead of the HTML view:
+   *   GitHub: github.com/{owner}/{repo}/blob/{ref}/{path}
+   *           -> raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}
+   *   GitLab: gitlab.com/{group}/{repo}/-/blob/{ref}/{path}
+   *           -> gitlab.com/{group}/{repo}/-/raw/{ref}/{path}
    * @param {string} input - Original URL
    * @returns {string|null} Proxied URL or null if unrecognized
    */
@@ -54,8 +62,26 @@
     try {
       var u = new URL(input);
       if (HOSTS.indexOf(u.hostname) === -1) return null;
+
+      var host = u.hostname;
+      var path = u.pathname;
+
+      // GitHub blob page -> raw host (drop the "/blob" segment).
+      if (host === 'github.com') {
+        var blobMatch = path.match(/^\/([^/]+)\/([^/]+)\/blob\/(.+)$/);
+        if (blobMatch) {
+          host = 'raw.githubusercontent.com';
+          path = '/' + blobMatch[1] + '/' + blobMatch[2] + '/' + blobMatch[3];
+        }
+      }
+
+      // GitLab blob page -> /-/raw/ on the same host (preserves subgroups).
+      if (host === 'gitlab.com') {
+        path = path.replace('/-/blob/', '/-/raw/');
+      }
+
       // Primary format: origin/host/path (without protocol)
-      return window.location.origin + '/' + u.hostname + u.pathname + u.search + u.hash;
+      return window.location.origin + '/' + host + path + u.search + u.hash;
     } catch (e) {
       return null;
     }
@@ -116,6 +142,7 @@
     var outputLink = document.getElementById('githubFormattedLink');
     var copyBtn = document.getElementById('copyButton');
     var downloadBtn = document.getElementById('downloadButton');
+    var previewBtn = document.getElementById('previewButton');
     var themeToggle = document.getElementById('themeToggle');
 
     initThemeToggle(themeToggle);
@@ -190,6 +217,18 @@
       });
     }
 
+    // Preview button — opens the proxied URL in a new window with ?preview=1.
+    // The backend serves it as inline text/plain (HTML forced to text/plain to
+    // prevent rendering), so there is zero phishing risk.
+    if (previewBtn) {
+      previewBtn.addEventListener('click', function () {
+        if (currentUrl) {
+          var sep = currentUrl.indexOf('?') === -1 ? '?' : '&';
+          window.open(currentUrl + sep + 'preview=1', '_blank', 'noopener,noreferrer');
+        }
+      });
+    }
+
     // Render access rules
     renderRules();
     renderExamples();
@@ -199,10 +238,11 @@
   /** Initialize and persist the manual light/dark theme toggle. */
   function initThemeToggle(button) {
     if (!button) return;
+    var root = document.documentElement;
     var systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
 
     function currentTheme() {
-      var explicit = document.documentElement.getAttribute('data-theme');
+      var explicit = root.getAttribute('data-theme');
       return explicit || (systemTheme.matches ? 'dark' : 'light');
     }
 
@@ -213,9 +253,27 @@
       button.setAttribute('title', label);
     }
 
+    /**
+     * Temporarily disable all transitions while a theme change applies, so the
+     * semi-transparent borders/shadows on cards don't animate (which flashes on
+     * iOS Safari). The class is removed on the next animation frame.
+     */
+    function suppressTransitionWhile(applyChange) {
+      root.classList.add('theme-switching');
+      applyChange();
+      // Force a synchronous reflow so the new values commit while transitions
+      // are disabled, then restore transitions after the next paint.
+      void root.offsetHeight;
+      window.requestAnimationFrame(function () {
+        root.classList.remove('theme-switching');
+      });
+    }
+
     button.addEventListener('click', function () {
       var theme = currentTheme() === 'dark' ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', theme);
+      suppressTransitionWhile(function () {
+        root.setAttribute('data-theme', theme);
+      });
       try {
         window.localStorage.setItem(THEME_KEY, theme);
       } catch (e) {
@@ -225,7 +283,14 @@
     });
 
     if (systemTheme.addEventListener) {
-      systemTheme.addEventListener('change', updateButton);
+      systemTheme.addEventListener('change', function () {
+        // Only react when the user hasn't chosen an explicit theme; otherwise
+        // the explicit data-theme already governs the appearance.
+        if (!root.getAttribute('data-theme')) {
+          suppressTransitionWhile(function () {});
+        }
+        updateButton();
+      });
     }
     updateButton();
   }
@@ -316,7 +381,6 @@
     var container = document.getElementById('usageExamples');
     if (!container) return;
 
-    var origin = window.location.origin;
     var fragment = document.createDocumentFragment();
 
     EXAMPLES.forEach(function (ex) {
@@ -327,8 +391,8 @@
       example.className = 'example';
       label.textContent = ex.label;
       if (ex.url) {
-        var u = new URL(ex.url);
-        value.textContent = origin + '/' + u.hostname + u.pathname + u.search;
+        // Reuse the same conversion logic (e.g. blob -> raw) for consistency.
+        value.textContent = convertUrl(ex.url) || ex.url;
       } else {
         value.textContent = ex.cmd.replace('your-domain.com', window.location.host);
       }

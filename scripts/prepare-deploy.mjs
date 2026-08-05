@@ -43,8 +43,27 @@ if (rateLimit) {
   config.ratelimits[0].simple.limit = Number(rateLimit);
 }
 
-// Optionally disable frontend
-if (!bool("DEPLOY_FRONTEND")) delete config.assets;
+// Optionally disable frontend.
+// Instead of deleting `assets` (which would route ALL requests through the
+// Worker and consume invocations), we keep the assets binding but point it at
+// a minimal directory containing only a 404 page.  Non-proxy paths are then
+// served directly by the assets layer (returning 404) without invoking the
+// Worker at all.  Only paths listed in `run_worker_first` still reach the
+// Worker for proxying.
+if (!bool("DEPLOY_FRONTEND")) {
+  const stubDir = new URL("public-stub/", outputDir);
+  await mkdir(stubDir, { recursive: true });
+  await writeFile(
+    new URL("404.html", stubDir),
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>404</title></head><body><p>Frontend disabled.</p></body></html>\n",
+  );
+  config.assets = {
+    directory: "../.wrangler/public-stub",
+    binding: "ASSETS",
+    not_found_handling: "404-page",
+    run_worker_first: config.assets?.run_worker_first || [],
+  };
+}
 
 // Inject access rules as runtime env vars (read by Worker for access control)
 config.vars = config.vars || {};
@@ -53,7 +72,8 @@ config.vars.BLACKLIST = env("BLACKLIST");
 config.vars.CASE_INSENSITIVE = env("CASE_INSENSITIVE") || "false";
 
 // Inline config into index.html so the frontend panel needs zero Worker calls
-if (config.assets) {
+const deployFrontend = bool("DEPLOY_FRONTEND");
+if (deployFrontend) {
   const parseList = (v) => (v || "").split(",").map(s => s.trim()).filter(Boolean);
   const panelConfig = JSON.stringify({
     whitelist: parseList(config.vars.WHITELIST),
@@ -80,4 +100,4 @@ if (config.assets) {
 await mkdir(outputDir, { recursive: true });
 await writeFile(outputFile, `${JSON.stringify(config, null, 2)}\n`);
 
-console.log(`Prepared ${config.name} (${config.assets ? "Worker + frontend" : "Worker only"})`);
+console.log(`Prepared ${config.name} (${deployFrontend ? "Worker + frontend" : "Worker only"})`);
