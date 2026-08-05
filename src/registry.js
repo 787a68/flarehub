@@ -293,7 +293,7 @@ async function fetchRegistry(upstream, method, sourceHeaders, maxRedirects = 5) 
  * 401 round-trips and Docker Hub rate-limit consumption.
  */
 async function handleAuth(upstream, request, host, ctx) {
-  const reqHeaders = sanitizeRequestHeaders(request.headers);
+  const reqHeaders = sanitizeRequestHeaders(request.headers, true);
 
   // Check if the client provided credentials (e.g. docker login to docker.io
   // with registry-mirrors configured). These tokens are per-user and must
@@ -389,7 +389,7 @@ export async function proxyRegistry(request, env, ctx) {
   // If the client already has an Authorization header, respect it.
   // Otherwise, check the Cache API for a previously obtained token
   // scoped to this registry + repository.
-  const reqHeaders = sanitizeRequestHeaders(request.headers);
+  const reqHeaders = sanitizeRequestHeaders(request.headers, true);
   // Track whether the client provided its own credentials (vs our pre-injected token).
   // This determines 401 handling: client auth → passthrough, no auth → auto-intercept.
   const hasClientAuth = reqHeaders.has('authorization');

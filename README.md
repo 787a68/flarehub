@@ -138,6 +138,8 @@ sudo systemctl restart docker
 
 > Docker Hub 认证透传：由于 Docker Hub 的 `www-authenticate` 保持原始 `auth.docker.io` 域，用户可通过 `docker login docker.io` 登录并享受个人 200 次 / 6 小时配额。其他注册表（GHCR、Quay 等）的认证由代理 `/token` 端点中继，无需额外登录。匿名请求时，Worker 会自动拦截 401 并在内部获取 token 重试，减少客户端往返次数。
 
+> 客户端 IP 透传策略：仅 Docker Registry 代理保留 `cf-connecting-ip` 头，使 Docker Hub 能识别真实客户端 IP 进行独立限流（否则所有匿名请求会共享 Workers 出口 IP，触发 429）。GitHub、GitLab、Hugging Face 等其他代理会删除该头，避免向上游泄露用户真实 IP。
+
 ### Hugging Face 加速
 
 | 场景 | 加速链接 |

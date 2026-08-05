@@ -123,15 +123,24 @@ export function redirectResponse(location, status = 302) {
 
 /**
  * Sanitize request headers before forwarding upstream.
- * Remove host, origin, referer, CF-specific, and identity-revealing headers.
+ * Remove host, origin, referer, and most CF-specific headers.
+ *
+ * @param {Headers} headers
+ * @param {boolean} preserveClientIp - When true, keep cf-connecting-ip so
+ *   Docker Hub can identify the real client IP for rate limiting. Without it,
+ *   Docker Hub falls back to the shared Cloudflare Workers egress IP, causing
+ *   429 for all users in the same anonymous rate-limit pool. Only the Docker
+ *   Registry proxy should set this; other proxies strip it to protect privacy.
  */
-export function sanitizeRequestHeaders(headers) {
+export function sanitizeRequestHeaders(headers, preserveClientIp = false) {
   const out = new Headers(headers);
   out.delete('host');
   out.delete('origin');
   out.delete('referer');
   out.delete('cookie');
-  out.delete('cf-connecting-ip');
+  if (!preserveClientIp) {
+    out.delete('cf-connecting-ip');
+  }
   out.delete('cf-ipcountry');
   out.delete('cf-ray');
   out.delete('cf-visitor');
