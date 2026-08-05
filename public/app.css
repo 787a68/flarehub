@@ -274,6 +274,7 @@ body{
 }
 .card-desc{
   font-size:13px;color:var(--fg-muted);margin-bottom:20px;line-height:1.55;
+  overflow-wrap:break-word;word-break:break-word;
 }
 
 /* ===== Converter Form ===== */
