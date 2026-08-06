@@ -435,7 +435,7 @@ html.theme-switching *::after{
   .hero-glass{padding:14px 0 8px}
   .hero-title{font-size:26px}
   .hero-sub{font-size:14px}
-  .input-glass-wrap{flex-direction:column;gap:8px;padding:8px 8px 8px 14px;align-items:stretch}
+  .input-glass-wrap{flex-direction:column;gap:8px;padding:10px;align-items:stretch}
   .input-glass-wrap .btn-primary{width:100%}
   .input-icon{display:none}
   .policy-grid{grid-template-columns:1fr}

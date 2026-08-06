@@ -327,6 +327,9 @@ export async function proxyGithub(request, env) {
     }
   } else {
     respHeaders.set('content-disposition', `attachment; filename="${filename}"`);
+    // Use application/octet-stream in download mode so browsers don't append
+    // a suffix (e.g. .txt) based on the upstream text/plain MIME type.
+    respHeaders.set('content-type', 'application/octet-stream');
   }
 
   // Stream the body
