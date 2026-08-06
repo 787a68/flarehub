@@ -235,22 +235,32 @@
     initGlassMotion();
   });
 
-  /** Initialize and persist the manual light/dark theme toggle. */
+  /**
+   * Initialize and persist the theme toggle.
+   * Three modes: auto (follow system), light, dark.
+   * Clicking in auto mode switches to the opposite of the current system
+   * preference (guarantees a visible change); clicking in an explicit mode
+   * returns to auto.
+   */
   function initThemeToggle(button) {
     if (!button) return;
     var root = document.documentElement;
     var systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
 
-    function currentTheme() {
-      var explicit = root.getAttribute('data-theme');
-      return explicit || (systemTheme.matches ? 'dark' : 'light');
+    function currentMode() {
+      var t = root.getAttribute('data-theme');
+      return t === 'light' || t === 'dark' ? t : 'auto';
     }
 
     function updateButton() {
-      var next = currentTheme() === 'dark' ? '亮色' : '深色';
-      var label = '切换到' + next + '模式';
-      button.setAttribute('aria-label', label);
-      button.setAttribute('title', label);
+      var labels = {
+        auto: '自动（跟随系统）',
+        light: '亮色模式',
+        dark: '深色模式'
+      };
+      var mode = currentMode();
+      button.setAttribute('aria-label', labels[mode]);
+      button.setAttribute('title', labels[mode]);
     }
 
     /**
@@ -270,12 +280,17 @@
     }
 
     button.addEventListener('click', function () {
-      var theme = currentTheme() === 'dark' ? 'light' : 'dark';
+      var current = currentMode();
+      // In auto mode, switch to the opposite of the system preference so the
+      // change is always visible. In an explicit mode, return to auto.
+      var next = current === 'auto'
+        ? (systemTheme.matches ? 'light' : 'dark')
+        : 'auto';
       suppressTransitionWhile(function () {
-        root.setAttribute('data-theme', theme);
+        root.setAttribute('data-theme', next);
       });
       try {
-        window.localStorage.setItem(THEME_KEY, theme);
+        window.localStorage.setItem(THEME_KEY, next);
       } catch (e) {
         // The selected theme still applies for the current page.
       }
@@ -284,11 +299,6 @@
 
     if (systemTheme.addEventListener) {
       systemTheme.addEventListener('change', function () {
-        // Only react when the user hasn't chosen an explicit theme; otherwise
-        // the explicit data-theme already governs the appearance.
-        if (!root.getAttribute('data-theme')) {
-          suppressTransitionWhile(function () {});
-        }
         updateButton();
       });
     }

@@ -202,15 +202,15 @@ body{
 }
 .theme-toggle:hover{color:var(--fg);background:var(--surface-hover);transform:translateY(-1px)}
 .theme-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.theme-icon{grid-area:1/1;transition:opacity .2s var(--ease-out),transform .25s var(--ease-out)}
-.theme-icon-sun{opacity:0;transform:rotate(-30deg) scale(.75)}
-.theme-icon-moon{opacity:1;transform:rotate(0) scale(1)}
-:root[data-theme="dark"] .theme-icon-sun{opacity:1;transform:rotate(0) scale(1)}
-:root[data-theme="dark"] .theme-icon-moon{opacity:0;transform:rotate(30deg) scale(.75)}
-@media(prefers-color-scheme:dark){
-  :root:not([data-theme="light"]) .theme-icon-sun{opacity:1;transform:rotate(0) scale(1)}
-  :root:not([data-theme="light"]) .theme-icon-moon{opacity:0;transform:rotate(30deg) scale(.75)}
-}
+.theme-icon{grid-area:1/1;opacity:0;transform:scale(.75) rotate(-20deg);transition:opacity .2s var(--ease-out),transform .25s var(--ease-out)}
+/* Auto mode (default): half-filled circle */
+.theme-icon-auto{opacity:1;transform:scale(1) rotate(0)}
+/* Explicit light: sun */
+:root[data-theme="light"] .theme-icon-auto{opacity:0;transform:scale(.75) rotate(20deg)}
+:root[data-theme="light"] .theme-icon-sun{opacity:1;transform:scale(1) rotate(0)}
+/* Explicit dark: moon */
+:root[data-theme="dark"] .theme-icon-auto{opacity:0;transform:scale(.75) rotate(20deg)}
+:root[data-theme="dark"] .theme-icon-moon{opacity:1;transform:scale(1) rotate(0)}
 
 /* ===== Content ===== */
 .content{
