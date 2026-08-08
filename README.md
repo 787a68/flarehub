@@ -1,30 +1,42 @@
 # FlareHub
 
-运行在 Cloudflare Workers 上的边缘加速代理，为 GitHub、GitLab、Docker Registry 与 Hugging Face 提供全球边缘网络流式传输加速。无需服务器、无需数据库，部署后即可使用。
+运行在 Cloudflare Workers 上的边缘加速服务，为 GitHub、GitLab、Docker Registry 与 Hugging Face 提供全球边缘网络流式传输加速。无需服务器、无需数据库，部署后即可使用。
 
 <p align="center">
   <img src="docs/images/flarehub-ui.png" alt="FlareHub Liquid Glass 前端界面" width="760">
 </p>
 
+## 导航
+
+- [功能特性](#功能特性)
+- [支持的上游域名](#支持的上游域名)
+- [使用方法](#使用方法)
+- [部署方法](#部署方法)
+- [配置说明](#配置说明)
+- [项目结构](#项目结构)
+- [上游同步](#上游同步)
+- [常见问题](#常见问题)
+- [许可证](#许可证)
+
 ## 功能特性
 
 - **GitHub 加速**：Release 下载、Archive 打包、Raw 文件、Codeload、API、Gist、静态资源
 - **GitLab 加速**：Raw 文件、Archive 打包、Release 下载、API，支持 gitlab.com 及 freedesktop、GNOME、Kitware、Arch Linux、postmarketOS 等自托管实例
-- **Git Clone 加速**：支持 Git smart-http 协议（`git clone` / `git fetch`），兼容 GitHub 与所有 GitLab 实例
-- **Docker Registry 代理**：支持 `docker pull` 直接拉取，兼容 Docker Hub、GHCR、Quay、GCR、registry.k8s.io
+- **Git Clone 加速**：支持 Git smart-http 协议（`git clone` / `git fetch` / `git pull`，**只读**），兼容 GitHub 与所有 GitLab 实例；**不支持 `git push`**（加速服务为只读，避免向加速域泄露凭据）
+- **Docker Registry 加速**：支持 `docker pull` 直接拉取，兼容 Docker Hub、GHCR、Quay、GCR、registry.k8s.io
   - 401 自动拦截（匿名）：Worker 内部获取 token 并重试，将 3 次往返（401 → token → retry）压缩为 1 次客户端请求
-  - 401 透传（认证）：保留原始 `auth.docker.io` 认证域，用户 `docker login docker.io` 即可享受个人 200/6h 配额
+  - 401 透传（认证）：`www-authenticate` 挑战原样转发，realm 始终指向上游认证域，客户端只对上游认证、绝不对加速服务认证；用户 `docker login docker.io` 即可享受个人 200/6h 配额
   - 令牌中继：通过 `/token` 端点转发认证请求，Cache API 缓存匿名令牌（280s TTL）以减少 401 往返
-  - 其他注册表：重写 `www-authenticate` realm 至代理 `/token`，由 Worker 转发上游认证
+  - 凭证隔离：仅放行上游签发的 `Bearer` 令牌（镜像源拉取所必需）；`Basic` 等携带可逆明文密码的认证方案一律 403 拒绝，不转发、不留存
   - 重定向跟随：自动跟随上游 302（最多 5 跳），跨域时剥离 `Authorization` 头防止凭证泄露
   - S3 / CloudFront 头补全：blob 层下载重定向至 AWS S3 或 CloudFront 时，自动注入 `x-amz-content-sha256` 与 `x-amz-date` 头，避免匿名拉取被 CDN 返回 403
-  - Location 头剥离：删除响应中的 `Location` 头，防止客户端绕过代理直连上游 CDN
+  - Location 头剥离：删除响应中的 `Location` 头，防止客户端绕过加速服务直连上游 CDN
 - **Hugging Face 加速**：resolve、blob、raw 文件及 CDN LFS 大文件
-- **默认下载 + 安全预览**：代理文件默认强制下载（`Content-Disposition: attachment`）；附加 `?preview=1` 参数可在新窗口内联预览，预览模式下 HTML 被强制转为纯文本显示，杜绝钓鱼风险
+- **默认下载 + 安全预览**：加速资源默认强制下载（`Content-Disposition: attachment`）；附加 `?preview=1` 参数可在新窗口内联预览，预览模式下 HTML 被强制转为纯文本显示，杜绝钓鱼风险
 - **访问控制**：基于关键词的白名单 / 黑名单，黑名单优先；支持 GitHub API、GitLab 子组与 Hugging Face 仓库路径
-- **安全缓存**：匿名静态资源与镜像分层缓存，携带认证、Cookie 或 `Set-Cookie` 的响应禁止进入共享缓存
+- **安全缓存**：匿名静态资源与镜像分层缓存，携带认证、Cookie 或 `Set-Cookie` 的响应禁止进入共享缓存；Secret Gist 仅靠不可猜测的 URL 保护，故 gist 响应一律 `no-store`，避免上游删除后边缘仍留有副本；4xx / 5xx 错误响应同样不进缓存
 - **Liquid Glass 面板**：静态光学色层、半透明折射、高光边框与适度模糊，无持续背景动画，兼顾质感、移动端功耗和无障碍体验
-- **速率限制**：基于 Cloudflare Rate Limiter 的全局 IP 级请求限流（仅限代理请求，不含 CORS 预检与静态资源）
+- **速率限制**：基于 Cloudflare Rate Limiter 的全局 IP 级请求限流（仅限加速请求，不含 CORS 预检与静态资源）
 - **前端面板**：内置玻璃拟态 UI，提供链接转换器、访问规则展示与使用示例
 - **主题切换**：右上角按钮支持三态切换——自动（跟随系统）、亮色、深色；自动模式下点击切换到与系统偏好相反的显式主题，显式模式下点击回到自动，确保每次点击都有视觉变化，选择持久化到 localStorage
 - **CI/CD**：GitHub Actions 自动部署到 Cloudflare Workers，支持上游同步
@@ -55,7 +67,7 @@ https://flarehub.example.com/github.com/user/repo
 https://flarehub.example.com/https://github.com/user/repo
 ```
 
-> **下载与预览**：所有代理文件默认强制下载（`Content-Disposition: attachment`）。在链接后附加 `?preview=1` 可切换为内联预览模式，例如 `https://flarehub.example.com/raw.githubusercontent.com/user/repo/main/README.md?preview=1`。预览模式下 HTML 内容会被强制转为纯文本显示，防止钓鱼；图片等安全类型保持原样渲染。
+> **下载与预览**：所有加速资源默认强制下载（`Content-Disposition: attachment`）。在链接后附加 `?preview=1` 可切换为内联预览模式，例如 `https://flarehub.example.com/raw.githubusercontent.com/user/repo/main/README.md?preview=1`。预览模式下 HTML 内容会被强制转为纯文本显示，防止钓鱼；图片等安全类型保持原样渲染。
 
 ### GitHub 加速
 
@@ -70,7 +82,7 @@ https://flarehub.example.com/https://github.com/user/repo
 | API | `https://flarehub.example.com/api.github.com/repos/user/repo/releases` |
 | 静态资源 | `https://flarehub.example.com/github.githubassets.com/assets/123.js` |
 
-> 注意：GitHub、GitLab、Hugging Face、Gist 的网页（HTML）不会被代理，仅代理文件、归档和 API 数据。
+> 注意：GitHub、GitLab、Hugging Face、Gist 的网页（HTML）不会被加速，仅加速文件、归档和 API 数据。
 
 ### GitLab 加速
 
@@ -87,7 +99,7 @@ https://flarehub.example.com/https://github.com/user/repo
 
 ### Git Clone 加速
 
-支持 Git smart-http 协议，可直接通过代理执行 `git clone`、`git fetch`、`git pull`：
+支持 Git smart-http 协议，可直接通过加速服务执行 `git clone`、`git fetch`、`git pull`（**只读**，兼容公开与私有仓库）：
 
 ```bash
 # GitHub 仓库
@@ -100,7 +112,9 @@ git clone https://flarehub.example.com/gitlab.com/user/repo.git
 git clone https://flarehub.example.com/gitlab.freedesktop.org/user/repo.git
 ```
 
-私有仓库可通过 `git clone https://flarehub.example.com/github.com/user/repo.git` 配合 HTTP Basic Auth（`git clone https://user:token@flarehub.example.com/...`）传入凭据。
+> **仅支持只读操作**：加速服务**不支持 `git push`**。如需推送代码，请直接对 `github.com` / `gitlab.com` 原始地址操作，不要将加速域名用作 push remote（否则加速服务会拒绝，且可能向加速域泄露凭据）。
+>
+> **私有仓库凭据安全**：请勿在加速 URL 中嵌入 `user:token@`（如 `https://user:token@flarehub.example.com/...`），这会把你的 GitHub/GitLab 令牌发往加速域名。加速服务对只读 clone 的鉴权应直接对**上游原始域名**生效——若上游为私有库，推荐用本地 git credential helper 对 `github.com` 认证，而非经加速服务传 token。
 
 ### Docker Registry 加速
 
@@ -140,9 +154,11 @@ docker pull flarehub.example.com/registry.k8s.io/pause:3.9
 sudo systemctl restart docker
 ```
 
-> Docker Hub 认证透传：由于 Docker Hub 的 `www-authenticate` 保持原始 `auth.docker.io` 域，用户可通过 `docker login docker.io` 登录并享受个人 200 次 / 6 小时配额。其他注册表（GHCR、Quay 等）的认证由代理 `/token` 端点中继，无需额外登录。匿名请求时，Worker 会自动拦截 401 并在内部获取 token 重试，减少客户端往返次数。
+> 认证透传：所有注册表的 `www-authenticate` 挑战均原样转发，realm 始终指向上游认证服务（如 `auth.docker.io`），加速服务不会把认证域改写到自身。因此用户可通过 `docker login docker.io` 登录并享受个人 200 次 / 6 小时配额，且密码只发往 Docker 官方、不经过加速服务。匿名请求时，Worker 会自动拦截 401 并在内部获取 token 重试，减少客户端往返次数。
+>
+> **加速服务不接受用户凭证**：本加速服务只加速公开资源，仅放行上游签发的短期 `Bearer` 令牌（Docker daemon 拉取流程所必需）。若请求携带 `Basic` 等含明文密码的认证头（例如对加速域名执行 `docker login`，或使用 `https://user:token@` 形式的 URL），加速服务会直接返回 403 而非转发。请始终对上游原始域名认证。
 
-> 客户端 IP 透传策略：仅 Docker Registry 代理保留 `cf-connecting-ip` 头，使 Docker Hub 能识别真实客户端 IP 进行独立限流（否则所有匿名请求会共享 Workers 出口 IP，触发 429）。GitHub、GitLab、Hugging Face 等其他代理会删除该头，避免向上游泄露用户真实 IP。
+> 客户端 IP 透传策略：仅 Docker Registry 加速保留 `cf-connecting-ip` 头，使 Docker Hub 能识别真实客户端 IP 进行独立限流（否则所有匿名请求会共享 Workers 出口 IP，触发 429）。GitHub、GitLab、Hugging Face 等其他加速会删除该头，避免向上游泄露用户真实 IP。
 
 ### Hugging Face 加速
 
@@ -255,9 +271,9 @@ RATE_LIMITER = 60
 
 访问规则匹配逻辑：
 - 对 GitHub 仓库、GitHub API 与 Gist，匹配对象优先为 `owner/repo`
-- 对 GitLab 文件代理，匹配完整项目路径，包含任意层级子组（适用于所有支持的 GitLab 实例）
+- 对 GitLab 文件加速，匹配完整项目路径，包含任意层级子组（适用于所有支持的 GitLab 实例）
 - 对 Hugging Face 模型、Dataset 与 Space，匹配对象为 `owner/repo`
-- 对 Docker Registry 代理，匹配对象为镜像仓库名
+- 对 Docker Registry 加速，匹配对象为镜像仓库名
 - 关键词为**包含匹配**：目标字符串包含关键词即命中
 - 黑名单优先于白名单：命中黑名单则拒绝，无论白名单如何设置
 - 白名单为空时允许全部（未被黑名单命中的）
@@ -272,8 +288,8 @@ RATE_LIMITER = 60
 flarehub/
 ├── src/
 │   ├── worker.js          # Worker 入口，路由分发
-│   ├── github.js          # GitHub / GitLab / HuggingFace / Docker 二进制 / Git Clone 代理
-│   ├── registry.js        # Docker Registry v2 代理与令牌转发
+│   ├── github.js          # GitHub / GitLab / HuggingFace / Docker 二进制 / Git Clone 加速
+│   ├── registry.js        # Docker Registry v2 加速与令牌转发
 │   ├── access.js          # 白名单 / 黑名单访问控制
 │   └── http.js            # HTTP 工具：CORS、错误、头清理、缓存、S3 头补全
 ├── public/
@@ -300,7 +316,7 @@ flarehub/
 
 ## 常见问题
 
-### 如何限制只代理特定仓库？
+### 如何限制只加速特定仓库？
 
 设置 `WHITELIST` 变量，匹配对象为 `owner/repo`（GitHub / GitLab）或镜像名（Docker），关键词为**包含匹配**：
 
@@ -328,10 +344,14 @@ BLACKLIST = private, internal
 
 访问规则在部署时以内联 JSON 数据块写入 `index.html`，无需额外 Worker 请求。修改 `WHITELIST` / `BLACKLIST` / `CASE_INSENSITIVE` 环境变量后，需要重新部署才能更新前端面板显示。注意：访问控制的实际执行在 Worker 端实时读取环境变量，修改后立即生效，无需重新部署。
 
-### 如何关闭前端面板只保留代理功能？
+### 如何关闭前端面板只保留加速功能？
 
-设置 GitHub Variable `DEPLOY_FRONTEND=false`，部署脚本会将 `assets` 指向一个仅含 404 页面的最小目录。非代理路径（前端页面）由 assets 层直接返回 404，不消耗 Worker 调用；只有代理路径（`run_worker_first` 中列出的）才会触发 Worker。
+设置 GitHub Variable `DEPLOY_FRONTEND=false`，部署脚本会将 `assets` 指向一个仅含 404 页面的最小目录。非加速路径（前端页面）由 assets 层直接返回 404，不消耗 Worker 调用；只有加速路径（`run_worker_first` 中列出的）才会触发 Worker。
 
 ## 许可证
 
 [MIT License](LICENSE)
+
+## 免责声明
+
+本项目仅作为网络加速工具，供学习与研究用途。使用者需遵守所在地区的法律法规，以及上游服务（GitHub、GitLab、Docker、Hugging Face 等）的服务条款。本项目不对任何因使用或滥用本服务而导致的后果承担责任，不保证服务的可用性、安全性与稳定性。使用即表示你理解并同意自行承担相关风险。

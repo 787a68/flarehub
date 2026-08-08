@@ -23,6 +23,7 @@
       "/gist.githubusercontent.com/*",
       "/objects.githubusercontent.com/*",
       "/github-releases.githubusercontent.com/*",
+      "/release-assets.githubusercontent.com/*",
       "/huggingface.co/*",
       "/cdn-lfs.hf.co/*",
       "/cdn-lfs-us-1.hf.co/*",

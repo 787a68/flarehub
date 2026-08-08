@@ -8,7 +8,7 @@
  * - Docker binary: download.docker.com
  */
 
-import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, cacheHeaders, withCors, isStaticAsset, ensureS3Headers, isAmazonS3 } from './http.js';
+import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, cacheHeaders, withCors, isStaticAsset, ensureS3Headers, isAmazonS3, classifyAuth } from './http.js';
 import { checkAccess } from './access.js';
 
 /** Upstream host → upstream base URL mapping. */
@@ -38,6 +38,15 @@ const HOSTS = {
   'gitlab.archlinux.org': 'https://gitlab.archlinux.org',
   'gitlab.postmarketos.org': 'https://gitlab.postmarketos.org',
 };
+
+/** Hosts whose paths follow the /owner/repo/... structure (for access control). */
+const REPOSITORY_HOSTS = new Set([
+  'github.com',
+  'raw.githubusercontent.com',
+  'codeload.github.com',
+  'gist.github.com',
+  'gist.githubusercontent.com',
+]);
 
 /** Hosts that serve HTML pages (not proxied as-is). */
 const HTML_HOSTS = new Set([
@@ -84,14 +93,7 @@ function accessTarget(host, pathname) {
     return pathname;
   }
 
-  const repositoryHosts = new Set([
-    'github.com',
-    'raw.githubusercontent.com',
-    'codeload.github.com',
-    'gist.github.com',
-    'gist.githubusercontent.com',
-  ]);
-  if (repositoryHosts.has(host)) {
+  if (REPOSITORY_HOSTS.has(host)) {
     const match = pathname.match(/^\/([^/]+)\/([^/]+)(?:\/|$)/);
     if (match) return `${match[1]}/${match[2]}`;
   }
@@ -165,6 +167,27 @@ function isGitRequest(request, pathname) {
 }
 
 /**
+ * Detect Git *write* operations (git push). The proxy only supports read-only
+ * Git (clone / fetch / pull via git-upload-pack). Push is rejected because:
+ *  - A public proxy must never solicit credentials from clients. When a push
+ *    lacks an Authorization header, GitHub returns 401, which the proxy would
+ *    transparently forward, causing the Git client to prompt the user for a
+ *    password *addressed to the proxy domain* — a credential-phishing surface.
+ *  - There is no legitimate reason for an anonymous file proxy to accept writes
+ *    to upstream repositories.
+ */
+function isGitPush(request, url) {
+  const pathname = url.pathname;
+  if (pathname.includes('/git-receive-pack')) return true;
+  // git push also hits /info/refs?service=git-receive-pack
+  if (pathname.includes('/info/refs') &&
+      (url.searchParams.get('service') === 'git-receive-pack')) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Build minimal headers for Git smart-http requests.
  * Strips all Cloudflare/proxy/internal headers to avoid interference.
  */
@@ -198,8 +221,27 @@ export async function proxyGithub(request, env) {
     return errorResponse(404, 'Unknown upstream host');
   }
 
-  // Detect Git smart-http requests (git clone support)
+  // This proxy accelerates public downloads only; it must never receive,
+  // forward, or store user credentials. Basic encodes a reversible plaintext
+  // password, and unrecognized schemes cannot be shown to be safe, so both are
+  // refused outright rather than relayed upstream.
+  const authKind = classifyAuth(request.headers);
+  if (authKind === 'basic' || authKind === 'other') {
+    return errorResponse(
+      403,
+      'This accelerator does not accept user credentials. Only public resources are served.',
+    );
+  }
+
+  // Detect Git smart-http requests (git clone / fetch support)
   const gitRequest = GIT_CAPABLE_HOSTS.has(target.host) && isGitRequest(request, target.url.pathname);
+
+  // Reject Git push (write). The proxy is read-only for Git: clone/fetch/pull
+  // only. This prevents the proxy from ever surfacing a credential prompt
+  // addressed to the proxy domain (see isGitPush for the rationale).
+  if (gitRequest && isGitPush(request, target.url)) {
+    return errorResponse(403, 'Git push is not supported by this accelerator');
+  }
 
   // Only allow safe methods; Git requests need POST for git-upload-pack
   const allowedMethods = gitRequest ? ['GET', 'HEAD', 'POST'] : ['GET', 'HEAD'];
@@ -244,7 +286,16 @@ export async function proxyGithub(request, env) {
         redirect: 'follow',
       }));
 
+      // Never relay an authentication challenge. Forwarding 401 +
+      // WWW-Authenticate would make the Git client prompt for a password
+      // addressed to this proxy's domain — a credential-phishing surface.
+      // The resource is simply not publicly available: say so with 403.
+      if (upstreamRes.status === 401) {
+        return errorResponse(403, 'Resource is not publicly accessible');
+      }
+
       const respHeaders = sanitizeHeaders(upstreamRes.headers);
+      respHeaders.delete('www-authenticate');
       withCors(respHeaders);
 
       const body = request.method === 'HEAD' ? null : upstreamRes.body;
@@ -298,20 +349,43 @@ export async function proxyGithub(request, env) {
     return errorResponse(502, 'Upstream fetch failed');
   }
 
+  // Never relay an authentication challenge (see the Git branch above): a
+  // 401 + WWW-Authenticate would make browsers and curl prompt for a password
+  // addressed to this proxy's domain. Report it as "not public" instead.
+  if (upstreamRes.status === 401) {
+    return errorResponse(403, 'Resource is not publicly accessible');
+  }
+
   // Build response with sanitized + cache headers
   const respHeaders = sanitizeHeaders(upstreamRes.headers);
+  respHeaders.delete('www-authenticate');
+
+  // Error responses (4xx/5xx) are transient and must not be cached, matching
+  // the registry proxy's behaviour. Otherwise a momentary upstream failure
+  // would be pinned at the edge for the full static-asset TTL.
+  if (upstreamRes.status >= 400) {
+    respHeaders.set('cache-control', 'no-store');
+    respHeaders.set('cdn-cache-control', 'no-store');
+    withCors(respHeaders);
+    const errBody = request.method === 'HEAD' ? null : upstreamRes.body;
+    return new Response(errBody, {
+      status: upstreamRes.status,
+      statusText: upstreamRes.statusText,
+      headers: respHeaders,
+    });
+  }
+
   const cache = cacheHeaders(
     upstreamUrl,
     upstreamRes.headers,
     authenticated,
+    target.host,
   );
   for (const [k, v] of cache) respHeaders.set(k, v);
   withCors(respHeaders);
 
   // Default: force download (Content-Disposition: attachment).
   // ?preview=1: switch to inline so the browser displays the content.
-  //   For safety, HTML content-types are forced to text/plain to prevent
-  //   rendering (anti-phishing). Images keep their original type.
   const isPreview = url.searchParams.has('preview');
   // Extract filename from the ORIGINAL request path, not the redirected URL.
   // When upstream redirects to a CDN (e.g. objects.githubusercontent.com),
@@ -324,9 +398,13 @@ export async function proxyGithub(request, env) {
   filename = filename.replace(/"/g, '_');
   if (isPreview) {
     respHeaders.set('content-disposition', `inline; filename="${filename}"`);
-    // Anti-phishing: never let the browser render HTML in preview mode.
+    // Anti-phishing: never let the browser render executable/dangerous
+    // content types in preview mode. Raster images (png/jpg/gif/webp/...) and
+    // other inert types keep their original MIME so they still preview; but
+    // HTML, XHTML and SVG are forced to text/plain because they can execute
+    // scripts or be used for phishing on the proxy's own origin.
     const ct = (respHeaders.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    if (ct === 'text/html' || ct === 'application/xhtml+xml') {
+    if (ct === 'text/html' || ct === 'application/xhtml+xml' || ct === 'image/svg+xml') {
       respHeaders.set('content-type', 'text/plain; charset=utf-8');
     }
   } else {

@@ -15,10 +15,13 @@
  *   rate-limit quota via `docker login`)
  * - Token relay via /token endpoint (backward compatible)
  * - Token caching (Cache API, 280s TTL) + pre-injection (skip 401 round-trip)
- * - www-authenticate realm rewriting for non-Docker Hub registries
+ * - www-authenticate challenges are forwarded verbatim, so clients always
+ *   authenticate against the upstream realm and never against this proxy
+ * - Basic (and unrecognized) Authorization schemes are rejected: this proxy
+ *   accelerates public downloads and never handles user credentials
  */
 
-import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, withCors, ensureS3Headers } from './http.js';
+import { errorResponse, sanitizeHeaders, sanitizeRequestHeaders, withCors, ensureS3Headers, classifyAuth } from './http.js';
 import { checkAccess } from './access.js';
 
 /** Registry host → upstream base URL. */
@@ -275,8 +278,11 @@ async function fetchRegistry(upstream, method, sourceHeaders, maxRedirects = 5) 
       headers,
       redirect: 'manual',
     }));
-    if (response.status < 300 || response.status >= 400 || redirects >= maxRedirects) {
+    if (response.status < 300 || response.status >= 400) {
       return response;
+    }
+    if (redirects >= maxRedirects) {
+      return errorResponse(508, 'Too many upstream redirects');
     }
 
     const location = response.headers.get('location');
@@ -296,9 +302,10 @@ async function handleAuth(upstream, request, host, ctx) {
   const reqHeaders = sanitizeRequestHeaders(request.headers, true);
 
   // Check if the client provided credentials (e.g. docker login to docker.io
-  // with registry-mirrors configured). These tokens are per-user and must
-  // NOT be cached — otherwise one user's authenticated token could leak
-  // to anonymous users.
+  // with registry-mirrors configured). Callers reject every scheme except
+  // Bearer, so this can only be an upstream-issued token. It is still per-user
+  // and must NOT be cached — otherwise one user's authenticated token could
+  // leak to anonymous users.
   const hasClientAuth = reqHeaders.has('authorization');
 
   const req = new Request(upstream, {
@@ -362,6 +369,19 @@ export async function proxyRegistry(request, env, ctx) {
     return errorResponse(404, 'Unknown registry path');
   }
 
+  // Only upstream-issued Bearer tokens may transit this proxy. Basic carries a
+  // reversible plaintext password and unrecognized schemes cannot be shown to
+  // be safe, so both are refused rather than relayed upstream. This runs before
+  // the /token relay: that endpoint is precisely where a client misled into
+  // authenticating against the proxy would send its password.
+  const authKind = classifyAuth(request.headers);
+  if (authKind === 'basic' || authKind === 'other') {
+    return errorResponse(
+      403,
+      'This accelerator does not accept user credentials. Authenticate directly with the upstream registry.',
+    );
+  }
+
   // Auth token relay. Apply the same repository access rules to scope requests
   // so blocked images cannot obtain a pull token through /token directly.
   if (target.isAuth) {
@@ -390,9 +410,11 @@ export async function proxyRegistry(request, env, ctx) {
   // Otherwise, check the Cache API for a previously obtained token
   // scoped to this registry + repository.
   const reqHeaders = sanitizeRequestHeaders(request.headers, true);
-  // Track whether the client provided its own credentials (vs our pre-injected token).
+  // Track whether the client provided its own credentials (vs our pre-injected
+  // token). Non-Bearer schemes were rejected at the entry, so this is true only
+  // for an upstream-issued, scope-limited Bearer token.
   // This determines 401 handling: client auth → passthrough, no auth → auto-intercept.
-  const hasClientAuth = reqHeaders.has('authorization');
+  const hasClientAuth = authKind === 'bearer';
   if (!hasClientAuth) {
     const service = AUTH_SERVICES[target.host] || target.host;
     const scope = getScopeForPath(target.path);
@@ -421,11 +443,13 @@ export async function proxyRegistry(request, env, ctx) {
   //   to 1 client request, and works even when the client cannot reach the
   //   auth endpoint directly.
   //
-  // Authenticated requests (client has Authorization): pass through the 401
-  //   so the Docker daemon re-authenticates with its own credentials.
-  //   For Docker Hub: keep original realm (auth.docker.io) so users get their
-  //   personal 200/6h quota via `docker login docker.io`.
-  //   For other registries: rewrite realm to our /token endpoint.
+  // Authenticated requests (client has an upstream-issued Bearer token):
+  //   pass through the 401 unchanged so the Docker daemon re-authenticates
+  //   directly with the upstream auth service. The realm is NEVER rewritten to
+  //   point at this proxy: doing so would direct clients to send their
+  //   credentials here, turning a read-only accelerator into a credential
+  //   collection point. Keeping the upstream realm also preserves each user's
+  //   personal quota (e.g. `docker login docker.io` → 200 pulls/6h).
   //
   // If we pre-injected a cached token that turned out to be stale/invalid,
   // evict it from the cache so the next request gets a fresh token.
@@ -464,12 +488,8 @@ export async function proxyRegistry(request, env, ctx) {
     if (upstreamRes.status === 401) {
       const wwwAuth = upstreamRes.headers.get('www-authenticate');
       if (wwwAuth) {
+        // Pass the upstream challenge through verbatim — realm included.
         const headers = sanitizeHeaders(upstreamRes.headers);
-        const isDockerHub = target.host === 'registry-1.docker.io';
-        if (!isDockerHub) {
-          const realm = `${url.origin}/token`;
-          headers.set('www-authenticate', wwwAuth.replace(/realm="[^"]*"/, `realm="${realm}"`));
-        }
         headers.set('cache-control', 'no-store');
         headers.set('cdn-cache-control', 'no-store');
         if (isV2Base) headers.set('docker-distribution-api-version', 'registry/2.0');

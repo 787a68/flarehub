@@ -34,6 +34,43 @@ export const CDN_HOSTS = new Set([
   'cdn-lfs-us-1.hf.co',
 ]);
 
+/**
+ * Hosts serving unlisted-but-unauthenticated content (secret gists).
+ * Their URLs act as bearer capabilities: anyone holding the URL can read the
+ * content, and the owner's only revocation mechanism is deleting it upstream.
+ * Caching such responses at the edge would keep serving copies after upstream
+ * deletion, so they are always marked no-store.
+ */
+export const UNLISTED_CONTENT_HOSTS = new Set([
+  'gist.github.com',
+  'gist.githubusercontent.com',
+]);
+
+/**
+ * Classify the client's Authorization header.
+ *
+ * - 'bearer' — an upstream-issued, short-lived, scope-limited token. Required
+ *   by the Docker Registry v2 flow: the daemon retries with this token after a
+ *   401 challenge, so it must be forwarded for registry mirrors to work.
+ * - 'basic'  — base64 is reversible encoding, not encryption. These are
+ *   long-lived plaintext credentials that a public read-only proxy must never
+ *   receive or forward.
+ * - 'other'  — unrecognized scheme. Rejected by default: a whitelist is safer
+ *   than a blacklist when the payload may contain long-lived secrets.
+ * - 'none'   — no credentials (the overwhelming majority of traffic).
+ *
+ * @param {Headers} headers
+ * @returns {'bearer'|'basic'|'other'|'none'}
+ */
+export function classifyAuth(headers) {
+  const auth = headers.get('authorization');
+  if (!auth) return 'none';
+  const scheme = auth.trim().split(/\s+/)[0].toLowerCase();
+  if (scheme === 'bearer') return 'bearer';
+  if (scheme === 'basic') return 'basic';
+  return 'other';
+}
+
 /** SHA-256 of an empty body — required by AWS S3 / CloudFront for GET requests. */
 const EMPTY_BODY_SHA256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 
@@ -171,13 +208,28 @@ export function sanitizeHeaders(headers) {
 /**
  * Build cache-control directives for proxied responses.
  * Static assets get long cache; everything else gets short edge cache.
+ *
+ * @param {URL} url - Final upstream URL (after redirects).
+ * @param {Headers} existing - Upstream response headers.
+ * @param {boolean} authenticated - Client supplied its own credentials.
+ * @param {string} [originHost] - Host originally requested, before redirects.
+ *   Needed so unlisted content keeps its no-store treatment even if upstream
+ *   redirects it to a CDN host.
  */
-export function cacheHeaders(url, existing, authenticated = false) {
+export function cacheHeaders(url, existing, authenticated = false, originHost = '') {
   const cache = new Headers();
   const cc = existing?.get('cache-control') || '';
 
   // Never share authenticated or explicitly private responses.
   if (authenticated || /no-store|no-cache|private/i.test(cc) || existing?.has('set-cookie')) {
+    cache.set('cache-control', 'private, no-store');
+    cache.set('cdn-cache-control', 'no-store');
+    return cache;
+  }
+
+  // Secret gists are protected only by an unguessable URL. Never retain a
+  // shared copy: the edge would otherwise outlive upstream deletion.
+  if (UNLISTED_CONTENT_HOSTS.has(url.hostname) || UNLISTED_CONTENT_HOSTS.has(originHost)) {
     cache.set('cache-control', 'private, no-store');
     cache.set('cdn-cache-control', 'no-store');
     return cache;
