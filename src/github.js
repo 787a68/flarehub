@@ -313,7 +313,11 @@ export async function proxyGithub(request, env) {
   //   For safety, HTML content-types are forced to text/plain to prevent
   //   rendering (anti-phishing). Images keep their original type.
   const isPreview = url.searchParams.has('preview');
-  const pathParts = upstreamUrl.pathname.split('/');
+  // Extract filename from the ORIGINAL request path, not the redirected URL.
+  // When upstream redirects to a CDN (e.g. objects.githubusercontent.com),
+  // the CDN URL's final segment is an opaque token without the file extension,
+  // causing the downloaded file to lose its suffix.
+  const pathParts = target.url.pathname.split('/');
   const rawName = pathParts[pathParts.length - 1] || 'download';
   let filename;
   try { filename = decodeURIComponent(rawName); } catch { filename = rawName; }
